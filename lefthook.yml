@@ -1,0 +1,6 @@
+assert_lefthook_installed: true
+
+commit-msg:
+  scripts:
+    "lint.sh":
+      runner: bash
