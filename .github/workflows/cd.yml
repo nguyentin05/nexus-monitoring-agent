@@ -1,0 +1,156 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "cmd/**"
+      - "internal/**"
+      - "Dockerfile"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: monitoring-agent-release
+  cancel-in-progress: false
+
+jobs:
+  agent-ci:
+    name: Validate agent
+    permissions:
+      actions: read
+      contents: write
+      security-events: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      allow_format: false
+
+  publish:
+    name: Publish container image
+    needs: agent-ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-southeast-1
+      IMAGE_TAG: sha-${{ github.sha }}
+      REPOSITORY: nexus-monitoring-agent
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ECR_ROLE_ARN }}
+          role-session-name: nexus-monitoring-agent-release
+
+      - name: Validate immutable image tags
+        run: test "$(aws ecr describe-repositories --repository-names "$REPOSITORY" --query 'repositories[0].imageTagMutability' --output text)" = IMMUTABLE
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Docker Setup Buildx
+        uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+  sign:
+    name: Sign container image
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-southeast-1
+      IMAGE_TAG: sha-${{ github.sha }}
+      REPOSITORY: nexus-monitoring-agent
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ECR_ROLE_ARN }}
+          role-session-name: nexus-monitoring-agent-sign
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve image digest
+        id: image
+        run: |
+          digest="$(aws ecr batch-get-image --repository-name "$REPOSITORY" --image-ids imageTag="$IMAGE_TAG" --query 'images[0].imageId.imageDigest' --output text)"
+          test -n "$digest"
+          test "$digest" != None
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.REPOSITORY }}@${{ steps.image.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-monitoring-agent.spdx.json
+          upload-release-assets: false
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign image and attest SBOM
+        env:
+          IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ env.REPOSITORY }}@${{ steps.image.outputs.digest }}
+        run: |
+          cosign sign --yes "$IMAGE"
+          cosign attest --yes --type spdxjson --predicate sbom-monitoring-agent.spdx.json "$IMAGE"
+
+  update-gitops:
+    name: Create GitOps PR
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      IMAGE_TAG: sha-${{ github.sha }}
+    steps:
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: nguyentin05/nexus-gitops
+          ref: main
+          token: ${{ secrets.NEXUS_CICD_BOT_TOKEN }}
+          path: gitops
+
+      - name: Update GitOps image tag
+        uses: mikefarah/yq@v4.53.3
+        with:
+          cmd: yq -i '.image.tag = "${{ env.IMAGE_TAG }}"' gitops/charts/monitoring-agent/values-dev.yaml
+
+      - name: Create GitOps update PR
+        working-directory: gitops
+        env:
+          BOT_EMAIL: ${{ secrets.NEXUS_CICD_BOT_EMAIL }}
+          GH_TOKEN: ${{ secrets.NEXUS_CICD_BOT_TOKEN }}
+        run: |
+          branch="chore/update-monitoring-agent-${IMAGE_TAG}"
+          git config user.name "nexus-cicd-bot"
+          git config user.email "$BOT_EMAIL"
+          git switch -c "$branch"
+          git add charts/monitoring-agent/values-dev.yaml
+          git commit -m "chore(monitoring-agent): update image to $IMAGE_TAG"
+          git push origin "$branch"
+          gh pr create --repo nguyentin05/nexus-gitops --base main --head "$branch" --title "chore(monitoring-agent): update image to $IMAGE_TAG" --body "Automated promotion from nexus-monitoring-agent commit $GITHUB_SHA."

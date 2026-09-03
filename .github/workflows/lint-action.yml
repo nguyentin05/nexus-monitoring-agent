@@ -1,0 +1,20 @@
+name: Lint GitHub Actions
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  lint-actions:
+    name: Lint GitHub Actions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rhysd actionlint
+        uses: devops-actions/actionlint@v0.1.12

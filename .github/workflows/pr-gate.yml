@@ -1,0 +1,51 @@
+name: Pull request gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scan-secrets:
+    name: Scan secrets
+    permissions:
+      contents: read
+    uses: ./.github/workflows/scan-secret.yml
+
+  lint-actions:
+    name: Lint GitHub Actions
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/lint-action.yml
+
+  agent-ci:
+    name: Agent CI
+    permissions:
+      actions: read
+      contents: write
+      security-events: write
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  merge-gate:
+    name: Merge gate
+    needs: [scan-secrets, lint-actions, agent-ci]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Verify required checks
+        env:
+          AGENT_RESULT: ${{ needs.agent-ci.result }}
+          LINT_ACTIONS_RESULT: ${{ needs.lint-actions.result }}
+          SCAN_SECRETS_RESULT: ${{ needs.scan-secrets.result }}
+        run: |
+          test "$AGENT_RESULT" = success
+          test "$LINT_ACTIONS_RESULT" = success
+          test "$SCAN_SECRETS_RESULT" = success

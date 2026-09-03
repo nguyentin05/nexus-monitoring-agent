@@ -2,7 +2,7 @@
 
 INPUT_FILE=$1
 START_LINE=$(head -n1 "$INPUT_FILE")
-ALLOWED_TYPES="feat|fix|docs|style|refactor|test|chore|ci|build"
+ALLOWED_TYPES="feat|fix|perf|deps|revert|docs|style|refactor|test|chore|ci|build"
 PATTERN="^($ALLOWED_TYPES)(\([a-zA-Z0-9_-]+\))?: .+"
 
 if ! [[ "$START_LINE" =~ $PATTERN ]]; then
