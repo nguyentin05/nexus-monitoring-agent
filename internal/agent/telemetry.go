@@ -79,7 +79,7 @@ func (t *Telemetry) ServiceMetrics(ctx context.Context, service string) (MetricS
 	serviceLabel := strconv.Quote(service)
 	pod := strconv.Quote(regexp.QuoteMeta(service) + "-.*")
 	queries := map[string]string{
-		"cpu":      fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{namespace=%s,pod=~%s,container!="",container!="POD"}[2m])) * 100`, namespace, pod),
+		"cpu":      fmt.Sprintf(`100 * sum(rate(container_cpu_usage_seconds_total{namespace=%s,pod=~%s,container!="",container!="POD"}[2m])) / clamp_min(sum(kube_pod_container_resource_limits{namespace=%s,pod=~%s,resource="cpu",unit="core"}), 0.001)`, namespace, pod, namespace, pod),
 		"memory":   fmt.Sprintf(`sum(container_memory_working_set_bytes{namespace=%s,pod=~%s,container!="",container!="POD"}) / 1024 / 1024`, namespace, pod),
 		"errors":   fmt.Sprintf(`100 * sum(rate(nexus_http_requests_total{namespace=%s,service=%s,status=~"5.."}[5m])) / clamp_min(sum(rate(nexus_http_requests_total{namespace=%s,service=%s}[5m])), 0.001)`, namespace, serviceLabel, namespace, serviceLabel),
 		"latency":  fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (rate(nexus_http_request_duration_seconds_bucket{namespace=%s,service=%s}[5m]))) * 1000`, namespace, serviceLabel),
@@ -269,6 +269,11 @@ func (k *KubeClient) WorkloadStatus(ctx context.Context, namespace, service stri
 				Conditions        []struct{ Type, Status string } `json:"conditions"`
 				ContainerStatuses []struct {
 					RestartCount int32 `json:"restartCount"`
+					LastState    struct {
+						Terminated *struct {
+							Reason string `json:"reason"`
+						} `json:"terminated"`
+					} `json:"lastState"`
 				} `json:"containerStatuses"`
 			} `json:"status"`
 		} `json:"items"`
@@ -289,6 +294,9 @@ func (k *KubeClient) WorkloadStatus(ctx context.Context, namespace, service stri
 		}
 		for _, container := range pod.Status.ContainerStatuses {
 			status.Restarts += container.RestartCount
+			if container.LastState.Terminated != nil && container.LastState.Terminated.Reason != "" {
+				status.TerminationReasons = append(status.TerminationReasons, container.LastState.Terminated.Reason)
+			}
 		}
 	}
 	return status, nil
