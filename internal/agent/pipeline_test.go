@@ -41,8 +41,8 @@ func TestProcessingPathsLimitLLMCalls(t *testing.T) {
 		wantAnalyses int
 		wantCollects int
 	}{
-		{name: "exact pattern still uses planner and analysis", incident: Incident{Description: "ImagePullBackOff returned 404"}, wantPath: "llm_planner", wantPlans: 1, wantAnalyses: 1, wantCollects: 1},
-		{name: "known alert uses planner and analysis", incident: Incident{Kind: "error_rate_high"}, wantPath: "llm_planner", wantPlans: 1, wantAnalyses: 1, wantCollects: 1},
+		{name: "exact pattern skips LLM", incident: Incident{Description: "ImagePullBackOff returned 404"}, wantPath: "exact_pattern", wantPlans: 0, wantAnalyses: 0, wantCollects: 0},
+		{name: "known alert skips planner", incident: Incident{Kind: "error_rate_high"}, wantPath: "known_plan", wantPlans: 0, wantAnalyses: 1, wantCollects: 1},
 		{name: "unknown alert uses planner and analysis", incident: Incident{Kind: "unknown_signal"}, wantPath: "llm_planner", wantPlans: 1, wantAnalyses: 1, wantCollects: 1},
 	}
 
@@ -72,7 +72,7 @@ func TestSubmitDeduplicatesDuringCooldown(t *testing.T) {
 	}
 }
 
-func TestRepeatedIncidentRunsFullAgenticFlow(t *testing.T) {
+func TestRepeatedIncidentUsesRCACache(t *testing.T) {
 	llm := &fakeLLM{}
 	collector := &fakeCollector{}
 	processor := NewProcessor(Config{Mode: "detect", QueueSize: 1, Cooldown: time.Minute, RCACacheTTL: time.Hour}, collector, llm, fakeNotifier{})
@@ -80,11 +80,24 @@ func TestRepeatedIncidentRunsFullAgenticFlow(t *testing.T) {
 
 	first := processor.Process(context.Background(), incident)
 	second := processor.Process(context.Background(), incident)
-	if first.Path != "llm_planner" || second.Path != "llm_planner" {
+	if first.Path != "known_plan" || second.Path != "known_plan" {
 		t.Fatalf("first=%s second=%s", first.Path, second.Path)
 	}
-	if llm.plans != 2 || llm.analyses != 2 || collector.calls != 2 {
+	if llm.plans != 0 || llm.analyses != 1 || collector.calls != 1 {
 		t.Fatalf("plans=%d analyses=%d collects=%d", llm.plans, llm.analyses, collector.calls)
+	}
+}
+
+func TestCorrelationKeyDeduplicatesSharedDependencyFailure(t *testing.T) {
+	processor := NewProcessor(Config{QueueSize: 2, Cooldown: time.Minute}, &fakeCollector{}, &fakeLLM{}, fakeNotifier{})
+	auth := Incident{Namespace: "apps", Service: "auth-service", Kind: "novel_log_pattern", CorrelationKey: "dependency:opentelemetry-collector:export-failure"}
+	profile := Incident{Namespace: "apps", Service: "profile-service", Kind: "novel_log_pattern", CorrelationKey: auth.CorrelationKey}
+
+	if !processor.Submit(auth) || !processor.Submit(profile) {
+		t.Fatal("submit unexpectedly failed")
+	}
+	if processor.Stats.Received.Load() != 1 || processor.Stats.Deduplicated.Load() != 1 {
+		t.Fatalf("received=%d deduplicated=%d", processor.Stats.Received.Load(), processor.Stats.Deduplicated.Load())
 	}
 }
 

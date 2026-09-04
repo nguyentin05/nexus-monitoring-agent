@@ -42,6 +42,13 @@ func TestPatternCatalogLearnsNormalizesAndPersists(t *testing.T) {
 	}
 }
 
+func TestOTelCollectorExportFailureIsRecognized(t *testing.T) {
+	template := `WARNING [opentelemetry.exporter.otlp.proto.http.trace_exporter] HTTPConnectionPool(host='opentelemetry-collector.monitoring.svc.cluster.local')`
+	if !isOTelCollectorExportFailure(template) {
+		t.Fatal("OTel collector export failure was not recognized")
+	}
+}
+
 func TestRedactRemovesCommonSecrets(t *testing.T) {
 	input := "password=hunter2 Authorization: Bearer abc.def token email=user@example.com key=AKIA1234567890ABCDEF"
 	output := redact(input, 1000)

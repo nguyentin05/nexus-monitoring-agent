@@ -114,13 +114,19 @@ func (p *Processor) Run(ctx context.Context) {
 			return
 		case incident := <-p.queue:
 			outcome := p.Process(ctx, incident)
-			slog.Info("incident processed", "incident", incident.Key(), "mode", p.cfg.Mode, "path", outcome.Path, "fallback", outcome.Fallback)
+			rootCause, confidence := "", ""
+			if outcome.RCA != nil {
+				rootCause, confidence = outcome.RCA.RootCause, outcome.RCA.Confidence
+			}
+			slog.Info("incident processed", "incident", incident.Key(), "description", incident.Description, "mode", p.cfg.Mode, "path", outcome.Path, "fallback", outcome.Fallback, "root_cause", rootCause, "confidence", confidence)
 			if p.cfg.Mode != "detect" {
 				p.Stats.Suppressed.Add(1)
 				continue
 			}
 			if err := p.notifier.Send(ctx, outcome); err != nil {
 				slog.Error("send incident notification", "incident", incident.Key(), "error", err)
+			} else {
+				slog.Info("incident notification sent", "incident", incident.Key(), "description", incident.Description)
 			}
 		}
 	}
@@ -133,21 +139,35 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 		return Outcome{Incident: incident, Path: "training", RCA: &result}
 	}
 
-	path := "llm_planner"
-	p.Stats.LLMPlanner.Add(1)
+	if result, ok := exactPattern(incident); ok {
+		p.Stats.ExactPattern.Add(1)
+		return Outcome{Incident: incident, Path: "exact_pattern", RCA: &result}
+	}
+	if cached, ok := p.cachedRCA(incident.Key()); ok {
+		p.Stats.RCACacheHits.Add(1)
+		return Outcome{Incident: incident, Path: cached.Path, RCA: &cached.Result}
+	}
+
+	path := "known_plan"
 	var plannerErr error
-	var plan CollectionPlan
-	if !p.budget.Allow(time.Now()) {
-		p.Stats.BudgetLimited.Add(1)
-		plannerErr = fmt.Errorf("LLM hourly call budget exhausted")
-		plan = defaultPlan()
+	plan, known := knownPlan(incident)
+	if known {
+		p.Stats.KnownPlan.Add(1)
 	} else {
-		p.Stats.PlannerCalls.Add(1)
-		var usage TokenUsage
-		plan, usage, plannerErr = p.llm.Plan(ctx, incident)
-		p.addUsage(usage)
-		if plannerErr != nil {
+		path = "llm_planner"
+		p.Stats.LLMPlanner.Add(1)
+		if !p.budget.Allow(time.Now()) {
+			p.Stats.BudgetLimited.Add(1)
+			plannerErr = fmt.Errorf("LLM hourly call budget exhausted")
 			plan = defaultPlan()
+		} else {
+			p.Stats.PlannerCalls.Add(1)
+			var usage TokenUsage
+			plan, usage, plannerErr = p.llm.Plan(ctx, incident)
+			p.addUsage(usage)
+			if plannerErr != nil {
+				plan = defaultPlan()
+			}
 		}
 	}
 
@@ -163,6 +183,7 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 	if err != nil {
 		return p.fallback(incident, path, plannerErr, err)
 	}
+	p.cacheRCA(incident.Key(), path, result)
 	return Outcome{Incident: incident, Path: path, RCA: &result}
 }
 

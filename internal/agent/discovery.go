@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -53,17 +54,22 @@ func (d *Discovery) RunOnce(ctx context.Context) int {
 			}
 			for _, pattern := range patterns {
 				d.processor.Stats.NewPatterns.Add(1)
+				correlationKey := ""
+				if isOTelCollectorExportFailure(pattern.Template) {
+					correlationKey = "dependency:opentelemetry-collector:export-failure"
+				}
 				incidents = append(incidents, Incident{
-					Source:      "discovery",
-					AlertName:   "DiscoveryNovelLogPattern",
-					Kind:        "novel_log_pattern",
-					Service:     service,
-					Namespace:   d.cfg.Namespace,
-					Severity:    "warning",
-					Description: "New error log pattern: " + pattern.Template,
-					Fingerprint: pattern.ID,
-					StartedAt:   pattern.LastSeen,
-					Evidence:    evidence,
+					Source:         "discovery",
+					AlertName:      "DiscoveryNovelLogPattern",
+					Kind:           "novel_log_pattern",
+					Service:        service,
+					Namespace:      d.cfg.Namespace,
+					Severity:       "warning",
+					Description:    "New error log pattern: " + pattern.Template,
+					Fingerprint:    pattern.ID,
+					CorrelationKey: correlationKey,
+					StartedAt:      pattern.LastSeen,
+					Evidence:       evidence,
 				})
 			}
 		}
@@ -74,6 +80,12 @@ func (d *Discovery) RunOnce(ctx context.Context) int {
 		}
 	}
 	return found
+}
+
+func isOTelCollectorExportFailure(template string) bool {
+	text := strings.ToLower(template)
+	return strings.Contains(text, "opentelemetry.exporter.otlp") &&
+		strings.Contains(text, "opentelemetry-collector.monitoring.svc.cluster.local")
 }
 
 func (d *Discovery) detectMetrics(service string, evidence Evidence) []Incident {

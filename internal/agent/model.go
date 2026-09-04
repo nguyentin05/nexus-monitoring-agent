@@ -17,19 +17,23 @@ var allowedTools = map[string]struct{}{
 }
 
 type Incident struct {
-	Source      string    `json:"source"`
-	AlertName   string    `json:"alert_name"`
-	Kind        string    `json:"kind"`
-	Service     string    `json:"service"`
-	Namespace   string    `json:"namespace"`
-	Severity    string    `json:"severity"`
-	Description string    `json:"description"`
-	Fingerprint string    `json:"fingerprint,omitempty"`
-	StartedAt   time.Time `json:"started_at"`
-	Evidence    Evidence  `json:"evidence,omitempty"`
+	Source         string    `json:"source"`
+	AlertName      string    `json:"alert_name"`
+	Kind           string    `json:"kind"`
+	Service        string    `json:"service"`
+	Namespace      string    `json:"namespace"`
+	Severity       string    `json:"severity"`
+	Description    string    `json:"description"`
+	Fingerprint    string    `json:"fingerprint,omitempty"`
+	CorrelationKey string    `json:"correlation_key,omitempty"`
+	StartedAt      time.Time `json:"started_at"`
+	Evidence       Evidence  `json:"evidence,omitempty"`
 }
 
 func (i Incident) Key() string {
+	if i.CorrelationKey != "" {
+		return i.Namespace + ":" + i.CorrelationKey
+	}
 	key := i.Namespace + ":" + i.Service + ":" + i.Kind
 	if i.Fingerprint != "" {
 		key += ":" + i.Fingerprint
@@ -52,11 +56,12 @@ type LogSample struct {
 }
 
 type WorkloadStatus struct {
-	DesiredReplicas   int32 `json:"desired_replicas"`
-	AvailableReplicas int32 `json:"available_replicas"`
-	ReadyPods         int   `json:"ready_pods"`
-	TotalPods         int   `json:"total_pods"`
-	Restarts          int32 `json:"restarts"`
+	DesiredReplicas    int32    `json:"desired_replicas"`
+	AvailableReplicas  int32    `json:"available_replicas"`
+	ReadyPods          int      `json:"ready_pods"`
+	TotalPods          int      `json:"total_pods"`
+	Restarts           int32    `json:"restarts"`
+	TerminationReasons []string `json:"termination_reasons,omitempty"`
 }
 
 type KubernetesEvent struct {
