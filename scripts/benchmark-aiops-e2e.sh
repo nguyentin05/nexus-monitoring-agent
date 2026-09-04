@@ -100,7 +100,7 @@ preflight() {
   image="$(kubectl get deployment auth-service -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].image}')"
   [[ -n "$image" ]] || die "Cannot resolve signed auth-service image"
   watched="$(kubectl get deployment monitoring-agent -n "$MONITORING_NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="WATCHED_SERVICES")].value}')"
-  [[ ",$watched," == *",$SERVICE,"* ]] || die "$SERVICE is not in deployed WATCHED_SERVICES; sync GitOps first"
+  [[ ",$watched," != *",$SERVICE,"* ]] || die "$SERVICE must be excluded from WATCHED_SERVICES so polling does not duplicate the controlled Alertmanager incident"
   budget="$(kubectl get deployment monitoring-agent -n "$MONITORING_NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="MAX_BEDROCK_CALLS_PER_HOUR")].value}')"
   [[ "$budget" =~ ^[0-9]+$ ]] || die "Cannot read deployed MAX_BEDROCK_CALLS_PER_HOUR"
   scenario_count=15
