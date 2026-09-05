@@ -21,10 +21,14 @@ func (f *fakeLLM) Analyze(context.Context, Incident) (RCAResult, TokenUsage, err
 	return RCAResult{RootCause: "test", Confidence: "high", SuggestedActions: []string{"inspect"}}, TokenUsage{Input: 20, Output: 5}, nil
 }
 
-type fakeCollector struct{ calls int }
+type fakeCollector struct {
+	calls int
+	plan  CollectionPlan
+}
 
-func (f *fakeCollector) Collect(_ context.Context, incident Incident, _ CollectionPlan) Evidence {
+func (f *fakeCollector) Collect(_ context.Context, incident Incident, plan CollectionPlan) Evidence {
 	f.calls++
+	f.plan = plan
 	return incident.Evidence
 }
 
@@ -57,6 +61,16 @@ func TestProcessingPathsLimitLLMCalls(t *testing.T) {
 				t.Fatalf("path=%s plans=%d analyses=%d collects=%d", outcome.Path, llm.plans, llm.analyses, collector.calls)
 			}
 		})
+	}
+}
+
+func TestPolicyChangeAlwaysCollectsNetworkPolicies(t *testing.T) {
+	collector := &fakeCollector{}
+	processor := NewProcessor(Config{QueueSize: 1}, collector, &fakeLLM{}, fakeNotifier{})
+	processor.Process(context.Background(), Incident{Kind: "unknown_signal", Description: "dependency unreachable after a policy change"})
+
+	if len(collector.plan.Tools) != 2 || collector.plan.Tools[1] != ToolNetworkPolicies {
+		t.Fatalf("unexpected plan: %+v", collector.plan.Tools)
 	}
 }
 
