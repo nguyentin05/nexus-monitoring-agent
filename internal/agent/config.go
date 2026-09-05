@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +31,7 @@ type Config struct {
 	MaxLogSamples               int
 	QueueSize                   int
 	MaxBedrockCalls             int
-	PatternStatePath            string
+	StateDir                    string
 	PatternAutoPromote          int
 	MaxPatterns                 int
 	AdaptivePlanMinObservations int
@@ -58,7 +59,7 @@ func LoadConfig() (Config, error) {
 		MaxLogSamples:               10,
 		QueueSize:                   64,
 		MaxBedrockCalls:             20,
-		PatternStatePath:            os.Getenv("PATTERN_STATE_PATH"),
+		StateDir:                    os.Getenv("STATE_DIR"),
 		PatternAutoPromote:          3,
 		MaxPatterns:                 1000,
 		AdaptivePlanMinObservations: 5,
@@ -135,6 +136,13 @@ func LoadConfig() (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func (c Config) StateFile(name string) string {
+	if c.StateDir == "" {
+		return ""
+	}
+	return filepath.Join(c.StateDir, name)
 }
 
 func env(name, fallback string) string {

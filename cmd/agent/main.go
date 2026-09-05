@@ -27,7 +27,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	catalog, err := agent.NewPatternCatalog(cfg.PatternStatePath, cfg.PatternAutoPromote, cfg.MaxPatterns)
+	catalog, err := agent.NewPatternCatalog(cfg.StateFile("patterns.json"), cfg.PatternAutoPromote, cfg.MaxPatterns)
 	if err != nil {
 		return err
 	}

@@ -3,9 +3,6 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -44,14 +41,7 @@ func NewPatternCatalog(path string, autoPromote, maxPatterns int) (*PatternCatal
 	if path == "" {
 		return catalog, nil
 	}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return catalog, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(data, catalog); err != nil {
+	if err := loadState(path, catalog); err != nil {
 		return nil, err
 	}
 	catalog.path = path
@@ -123,21 +113,7 @@ func (c *PatternCatalog) evict() {
 }
 
 func (c *PatternCatalog) persistLocked() error {
-	if c.path == "" {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, c.path)
+	return saveState(c.path, c)
 }
 
 var patternVariables = []*regexp.Regexp{
