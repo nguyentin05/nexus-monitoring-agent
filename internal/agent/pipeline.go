@@ -35,6 +35,10 @@ type Stats struct {
 	ExactPattern     atomic.Int64
 	KnownPlan        atomic.Int64
 	LLMPlanner       atomic.Int64
+	AdaptivePlan     atomic.Int64
+	AdaptivePromoted atomic.Int64
+	AdaptiveDemoted  atomic.Int64
+	PlannerSaved     atomic.Int64
 	Fallback         atomic.Int64
 	RCACacheHits     atomic.Int64
 	BudgetLimited    atomic.Int64
@@ -57,6 +61,7 @@ type Processor struct {
 	budget    *callBudget
 	rcaCache  map[string]rcaCacheEntry
 	cacheMu   sync.Mutex
+	adaptive  *adaptivePlanRegistry
 	Stats     Stats
 }
 
@@ -67,6 +72,19 @@ func NewProcessor(cfg Config, collector EvidenceCollector, llm LLM, notifier Out
 	if cfg.QueueSize < 1 {
 		cfg.QueueSize = 1
 	}
+	if cfg.AdaptivePlanMinObservations < 1 {
+		cfg.AdaptivePlanMinObservations = 5
+	}
+	if cfg.AdaptivePlanMinServices < 1 {
+		cfg.AdaptivePlanMinServices = 2
+	}
+	if cfg.AdaptivePlanShadowMatches < 1 {
+		cfg.AdaptivePlanShadowMatches = 3
+	}
+	if cfg.MaxPatterns < 1 {
+		cfg.MaxPatterns = 1000
+	}
+
 	return &Processor{
 		cfg:       cfg,
 		collector: collector,
@@ -76,6 +94,7 @@ func NewProcessor(cfg Config, collector EvidenceCollector, llm LLM, notifier Out
 		seen:      make(map[string]time.Time),
 		budget:    newCallBudget(cfg.MaxBedrockCalls),
 		rcaCache:  make(map[string]rcaCacheEntry),
+		adaptive:  newAdaptivePlanRegistry(cfg),
 	}
 }
 
@@ -151,9 +170,14 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 
 	path := "known_plan"
 	var plannerErr error
+	adaptive := false
 	plan, known := knownPlan(incident)
 	if known {
 		p.Stats.KnownPlan.Add(1)
+	} else if learned, ok := p.adaptive.Lookup(incident); ok {
+		path, plan, adaptive = "adaptive_plan", learned, true
+		p.Stats.AdaptivePlan.Add(1)
+		p.Stats.PlannerSaved.Add(1)
 	} else {
 		path = "llm_planner"
 		p.Stats.LLMPlanner.Add(1)
@@ -179,6 +203,9 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 	incident.Evidence = p.collector.Collect(ctx, incident, plan)
 	if !p.budget.Allow(time.Now()) {
 		p.Stats.BudgetLimited.Add(1)
+		if adaptive && p.adaptive.Demote(incident) {
+			p.Stats.AdaptiveDemoted.Add(1)
+		}
 		return p.fallback(incident, path, plannerErr, fmt.Errorf("LLM hourly call budget exhausted"))
 	}
 
@@ -186,9 +213,24 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 	result, usage, err := p.llm.Analyze(ctx, incident)
 	p.addUsage(usage)
 	if err != nil {
+		if adaptive && p.adaptive.Demote(incident) {
+			p.Stats.AdaptiveDemoted.Add(1)
+		}
 		return p.fallback(incident, path, plannerErr, err)
 	}
-	p.cacheRCA(incident.Key(), path, result)
+	if adaptive && (result.Confidence == "low" || len(incident.Evidence.CollectionErrs) > 0) {
+		if p.adaptive.Demote(incident) {
+			p.Stats.AdaptiveDemoted.Add(1)
+		}
+	} else if path == "llm_planner" && plannerErr == nil && result.Confidence != "low" && len(incident.Evidence.CollectionErrs) == 0 {
+		if p.adaptive.Observe(incident, plan) {
+			p.Stats.AdaptivePromoted.Add(1)
+			slog.Info("adaptive collection plan promoted", "kind", incident.Kind, "alert", incident.AlertName, "tools", plan.Tools)
+		}
+	}
+	if result.Confidence != "low" && len(incident.Evidence.CollectionErrs) == 0 {
+		p.cacheRCA(incident.Key(), path, result)
+	}
 	return Outcome{Incident: incident, Path: path, RCA: &result}
 }
 
@@ -321,6 +363,7 @@ func exactPattern(incident Incident) (RCAResult, bool) {
 }
 
 func (p *Processor) Metrics() string {
+	adaptiveCounts := p.adaptive.Counts()
 	lines := []string{
 		"# TYPE nexus_agent_polls_total counter", fmt.Sprintf("nexus_agent_polls_total %d", p.Stats.Polls.Load()),
 		"# TYPE nexus_agent_incidents_received_total counter", fmt.Sprintf("nexus_agent_incidents_received_total %d", p.Stats.Received.Load()),
@@ -331,6 +374,11 @@ func (p *Processor) Metrics() string {
 		"# TYPE nexus_agent_path_exact_pattern_total counter", fmt.Sprintf("nexus_agent_path_exact_pattern_total %d", p.Stats.ExactPattern.Load()),
 		"# TYPE nexus_agent_path_known_plan_total counter", fmt.Sprintf("nexus_agent_path_known_plan_total %d", p.Stats.KnownPlan.Load()),
 		"# TYPE nexus_agent_path_llm_planner_total counter", fmt.Sprintf("nexus_agent_path_llm_planner_total %d", p.Stats.LLMPlanner.Load()),
+		"# TYPE nexus_agent_path_adaptive_plan_total counter", fmt.Sprintf("nexus_agent_path_adaptive_plan_total %d", p.Stats.AdaptivePlan.Load()),
+		"# TYPE nexus_agent_adaptive_plan_promotions_total counter", fmt.Sprintf("nexus_agent_adaptive_plan_promotions_total %d", p.Stats.AdaptivePromoted.Load()),
+		"# TYPE nexus_agent_adaptive_plan_demotions_total counter", fmt.Sprintf("nexus_agent_adaptive_plan_demotions_total %d", p.Stats.AdaptiveDemoted.Load()),
+		"# TYPE nexus_agent_adaptive_planner_calls_saved_total counter", fmt.Sprintf("nexus_agent_adaptive_planner_calls_saved_total %d", p.Stats.PlannerSaved.Load()),
+		"# TYPE nexus_agent_adaptive_plans gauge", fmt.Sprintf("nexus_agent_adaptive_plans{state=\"candidate\"} %d", adaptiveCounts[adaptiveCandidate]), fmt.Sprintf("nexus_agent_adaptive_plans{state=\"shadow\"} %d", adaptiveCounts[adaptiveShadow]), fmt.Sprintf("nexus_agent_adaptive_plans{state=\"active\"} %d", adaptiveCounts[adaptiveActive]),
 		"# TYPE nexus_agent_fallback_total counter", fmt.Sprintf("nexus_agent_fallback_total %d", p.Stats.Fallback.Load()),
 		"# TYPE nexus_agent_rca_cache_hits_total counter", fmt.Sprintf("nexus_agent_rca_cache_hits_total %d", p.Stats.RCACacheHits.Load()),
 		"# TYPE nexus_agent_bedrock_budget_limited_total counter", fmt.Sprintf("nexus_agent_bedrock_budget_limited_total %d", p.Stats.BudgetLimited.Load()),

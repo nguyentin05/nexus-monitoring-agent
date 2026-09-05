@@ -13,6 +13,11 @@ Self-hosted Go service that correlates Alertmanager signals with Prometheus, Lok
                                                                                 |
                                                                                 +--> quota/error fallback
 
+Successful unknown-signal plans are learned in memory. A plan must repeat with
+the same tools across multiple services, pass a shadow-validation period, and
+produce medium/high-confidence RCA without collection errors before it becomes
+active. Active plans skip only the planner call; RCA still uses current evidence.
+
 Loki error logs also pass through a bounded pattern catalog. Dynamic values are normalized, repeated training patterns become known, and only previously unseen patterns become incidents after training. A per-service cursor prevents overlapping Loki windows from learning the same log again.
 
 The configured LLM can only choose these read-only collectors:
@@ -60,6 +65,9 @@ The AWS SDK uses its default credential chain, including EKS IRSA.
 | PATTERN_STATE_PATH | empty; in-memory catalog |
 | PATTERN_AUTO_PROMOTE_AFTER | 3 observations during training |
 | MAX_PATTERNS | 1000 |
+| ADAPTIVE_PLAN_MIN_OBSERVATIONS | 5 matching planner results |
+| ADAPTIVE_PLAN_MIN_SERVICES | 2 services |
+| ADAPTIVE_PLAN_SHADOW_MATCHES | 3 additional validations |
 | DISCORD_WEBHOOK_URL | empty; outcomes are logged |
 
 Set PATTERN_STATE_PATH=/data/patterns.json and mount /data to preserve learned patterns and Loki cursors across Pod restarts.

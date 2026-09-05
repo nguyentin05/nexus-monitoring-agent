@@ -74,6 +74,25 @@ func TestPolicyChangeAlwaysCollectsNetworkPolicies(t *testing.T) {
 	}
 }
 
+func TestAdaptivePlanPromotesAfterCrossServiceShadowValidation(t *testing.T) {
+	llm := &fakeLLM{}
+	processor := NewProcessor(Config{QueueSize: 1, AdaptivePlanMinObservations: 2, AdaptivePlanMinServices: 2, AdaptivePlanShadowMatches: 1}, &fakeCollector{}, llm, fakeNotifier{})
+	auth := Incident{AlertName: "DependencyFailure", Kind: "dependency_failure", Service: "auth-service", Description: "auth-service dependency timed out"}
+	profile := Incident{AlertName: auth.AlertName, Kind: auth.Kind, Service: "profile-service", Description: "profile-service dependency timed out"}
+
+	processor.Process(context.Background(), auth)
+	processor.Process(context.Background(), profile)
+	processor.Process(context.Background(), auth)
+	outcome := processor.Process(context.Background(), profile)
+
+	if outcome.Path != "adaptive_plan" || llm.plans != 3 || llm.analyses != 4 {
+		t.Fatalf("path=%s plans=%d analyses=%d", outcome.Path, llm.plans, llm.analyses)
+	}
+	if processor.Stats.AdaptivePromoted.Load() != 1 || processor.Stats.PlannerSaved.Load() != 1 {
+		t.Fatalf("promoted=%d saved=%d", processor.Stats.AdaptivePromoted.Load(), processor.Stats.PlannerSaved.Load())
+	}
+}
+
 func TestSubmitDeduplicatesDuringCooldown(t *testing.T) {
 	processor := NewProcessor(Config{QueueSize: 1, Cooldown: time.Minute}, &fakeCollector{}, &fakeLLM{}, fakeNotifier{})
 	incident := Incident{Namespace: "apps", Service: "auth-service", Kind: "cpu_high"}
