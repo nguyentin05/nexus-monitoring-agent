@@ -7,6 +7,7 @@ const (
 	ToolErrorLogs        = "error_logs"
 	ToolWorkloadStatus   = "workload_status"
 	ToolKubernetesEvents = "kubernetes_events"
+	ToolNetworkPolicies  = "network_policies"
 )
 
 var allowedTools = map[string]struct{}{
@@ -14,6 +15,7 @@ var allowedTools = map[string]struct{}{
 	ToolErrorLogs:        {},
 	ToolWorkloadStatus:   {},
 	ToolKubernetesEvents: {},
+	ToolNetworkPolicies:  {},
 }
 
 type Incident struct {
@@ -72,12 +74,21 @@ type KubernetesEvent struct {
 	Message   string    `json:"message"`
 }
 
+type NetworkPolicyEvidence struct {
+	Name            string            `json:"name"`
+	PolicyTypes     []string          `json:"policy_types"`
+	PodSelector     map[string]string `json:"pod_selector"`
+	EgressRuleCount int               `json:"egress_rule_count"`
+	AllowedPorts    []string          `json:"allowed_ports,omitempty"`
+}
+
 type Evidence struct {
-	Metrics        *MetricSnapshot   `json:"metrics,omitempty"`
-	Logs           []LogSample       `json:"logs,omitempty"`
-	Workload       *WorkloadStatus   `json:"workload,omitempty"`
-	Events         []KubernetesEvent `json:"kubernetes_events,omitempty"`
-	CollectionErrs []string          `json:"collection_errors,omitempty"`
+	Metrics         *MetricSnapshot         `json:"metrics,omitempty"`
+	Logs            []LogSample             `json:"logs,omitempty"`
+	Workload        *WorkloadStatus         `json:"workload,omitempty"`
+	Events          []KubernetesEvent       `json:"kubernetes_events,omitempty"`
+	NetworkPolicies []NetworkPolicyEvidence `json:"network_policies,omitempty"`
+	CollectionErrs  []string                `json:"collection_errors,omitempty"`
 }
 
 type CollectionPlan struct {

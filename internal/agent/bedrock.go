@@ -29,6 +29,7 @@ Choose only the minimum tools needed to diagnose the incident. Available tools:
 - error_logs: recent error, exception, panic and timeout logs from Loki
 - workload_status: Deployment and Pod readiness/restarts from the Kubernetes API
 - kubernetes_events: recent Kubernetes events for the service
+- network_policies: NetworkPolicies selecting the service, including policy types and allowed egress ports
 Never request shell commands, arbitrary URLs, mutations or tools outside this list.
 Return JSON only: {"tools":["tool_name"],"reason":"short explanation"}.`
 
