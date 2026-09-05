@@ -163,7 +163,8 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 		p.Stats.ExactPattern.Add(1)
 		return Outcome{Incident: incident, Path: "exact_pattern", RCA: &result}
 	}
-	if cached, ok := p.cachedRCA(incident.Key()); ok {
+	cacheKey := incidentCacheKey(incident)
+	if cached, ok := p.cachedRCA(cacheKey); ok {
 		p.Stats.RCACacheHits.Add(1)
 		return Outcome{Incident: incident, Path: cached.Path, RCA: &cached.Result}
 	}
@@ -229,7 +230,7 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 		}
 	}
 	if result.Confidence != "low" && len(incident.Evidence.CollectionErrs) == 0 {
-		p.cacheRCA(incident.Key(), path, result)
+		p.cacheRCA(cacheKey, path, result)
 	}
 	return Outcome{Incident: incident, Path: path, RCA: &result}
 }
@@ -245,7 +246,7 @@ func (p *Processor) fallback(incident Incident, path string, plannerErr, rcaErr 
 }
 
 func (p *Processor) cachedRCA(key string) (rcaCacheEntry, bool) {
-	if p.cfg.RCACacheTTL <= 0 {
+	if p.cfg.RCACacheTTL <= 0 || key == "" {
 		return rcaCacheEntry{}, false
 	}
 	now := time.Now()
@@ -261,7 +262,7 @@ func (p *Processor) cachedRCA(key string) (rcaCacheEntry, bool) {
 }
 
 func (p *Processor) cacheRCA(key, path string, result RCAResult) {
-	if p.cfg.RCACacheTTL <= 0 {
+	if p.cfg.RCACacheTTL <= 0 || key == "" {
 		return
 	}
 	p.cacheMu.Lock()
@@ -279,6 +280,13 @@ func (p *Processor) cacheRCA(key, path string, result RCAResult) {
 	p.rcaCache[key] = rcaCacheEntry{Result: result, Path: path, ExpiresAt: time.Now().Add(p.cfg.RCACacheTTL)}
 }
 
+func incidentCacheKey(incident Incident) string {
+	if incident.StartedAt.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", incident.Key(), incident.StartedAt.UTC().UnixNano())
+}
+
 func (p *Processor) addUsage(usage TokenUsage) {
 	p.Stats.InputTokens.Add(usage.Input)
 	p.Stats.OutputTokens.Add(usage.Output)
@@ -291,6 +299,8 @@ func knownPlan(incident Incident) (CollectionPlan, bool) {
 		"error_rate_high":   {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus},
 		"latency_high":      {ToolServiceMetrics, ToolErrorLogs},
 		"cpu_high":          {ToolServiceMetrics, ToolWorkloadStatus, ToolErrorLogs},
+		"node_cpu_high":     nil,
+		"node_memory_high":  nil,
 		"frequent_restarts": {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus, ToolKubernetesEvents},
 		"exception_pattern": {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus},
 		"novel_log_pattern": {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus},
@@ -315,6 +325,10 @@ func deterministicRCA(incident Incident, reason string) RCAResult {
 	switch incident.Kind {
 	case "cpu_high":
 		actions[0] = "Inspect per-Pod CPU usage, request rate and CPU throttling before changing resource limits."
+	case "node_cpu_high":
+		actions[0] = "Inspect node CPU saturation, workload placement and recent scheduling changes."
+	case "node_memory_high":
+		actions[0] = "Inspect node memory pressure, Pod working sets and recent evictions."
 	case "error_rate_high", "novel_log_pattern":
 		actions[0] = "Inspect the newest error logs and compare them with the last healthy deployment."
 	case "frequent_restarts":

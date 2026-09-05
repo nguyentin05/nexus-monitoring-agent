@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -260,6 +261,43 @@ func (k *KubeClient) get(ctx context.Context, path string, target any) error {
 		return fmt.Errorf("Kubernetes API %s returned %s", path, response.Status)
 	}
 	return json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(target)
+}
+
+func (k *KubeClient) AuthenticateServiceAccount(ctx context.Context, token, expectedUsername string) (bool, error) {
+	payload, err := json.Marshal(map[string]any{
+		"apiVersion": "authentication.k8s.io/v1",
+		"kind":       "TokenReview",
+		"spec":       map[string]string{"token": token},
+	})
+	if err != nil {
+		return false, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, k.baseURL+"/apis/authentication.k8s.io/v1/tokenreviews", bytes.NewReader(payload))
+	if err != nil {
+		return false, err
+	}
+	request.Header.Set("Authorization", "Bearer "+k.token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := k.httpClient.Do(request)
+	if err != nil {
+		return false, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return false, fmt.Errorf("Kubernetes TokenReview returned %s", response.Status)
+	}
+	var review struct {
+		Status struct {
+			Authenticated bool `json:"authenticated"`
+			User          struct {
+				Username string `json:"username"`
+			} `json:"user"`
+		} `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&review); err != nil {
+		return false, err
+	}
+	return review.Status.Authenticated && review.Status.User.Username == expectedUsername, nil
 }
 
 func (k *KubeClient) WorkloadStatus(ctx context.Context, namespace, service string) (WorkloadStatus, error) {

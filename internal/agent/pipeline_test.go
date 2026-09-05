@@ -109,14 +109,16 @@ func TestRepeatedIncidentUsesRCACache(t *testing.T) {
 	llm := &fakeLLM{}
 	collector := &fakeCollector{}
 	processor := NewProcessor(Config{Mode: "detect", QueueSize: 1, Cooldown: time.Minute, RCACacheTTL: time.Hour}, collector, llm, fakeNotifier{})
-	incident := Incident{Namespace: "apps", Service: "auth-service", Kind: "cpu_high"}
+	incident := Incident{Namespace: "apps", Service: "auth-service", Kind: "cpu_high", StartedAt: time.Now()}
 
 	first := processor.Process(context.Background(), incident)
 	second := processor.Process(context.Background(), incident)
-	if first.Path != "known_plan" || second.Path != "known_plan" {
-		t.Fatalf("first=%s second=%s", first.Path, second.Path)
+	incident.StartedAt = incident.StartedAt.Add(time.Minute)
+	third := processor.Process(context.Background(), incident)
+	if first.Path != "known_plan" || second.Path != "known_plan" || third.Path != "known_plan" {
+		t.Fatalf("first=%s second=%s third=%s", first.Path, second.Path, third.Path)
 	}
-	if llm.plans != 0 || llm.analyses != 1 || collector.calls != 1 {
+	if llm.plans != 0 || llm.analyses != 2 || collector.calls != 2 {
 		t.Fatalf("plans=%d analyses=%d collects=%d", llm.plans, llm.analyses, collector.calls)
 	}
 }

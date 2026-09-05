@@ -36,6 +36,7 @@ type Config struct {
 	AdaptivePlanMinObservations int
 	AdaptivePlanMinServices     int
 	AdaptivePlanShadowMatches   int
+	AlertmanagerUsername        string
 }
 
 func LoadConfig() (Config, error) {
@@ -63,6 +64,7 @@ func LoadConfig() (Config, error) {
 		AdaptivePlanMinObservations: 5,
 		AdaptivePlanMinServices:     2,
 		AdaptivePlanShadowMatches:   3,
+		AlertmanagerUsername:        env("ALERTMANAGER_USERNAME", "system:serviceaccount:monitoring:monitoring-alertmanager"),
 	}
 
 	var err error
@@ -119,8 +121,8 @@ func LoadConfig() (Config, error) {
 	if cfg.Mode != "training" && cfg.Mode != "shadow" && cfg.Mode != "detect" {
 		return Config{}, fmt.Errorf("AGENT_MODE must be training, shadow or detect")
 	}
-	if cfg.Address == "" || cfg.PrometheusURL == "" || cfg.LokiURL == "" || cfg.AWSRegion == "" || cfg.BedrockModelID == "" || cfg.Namespace == "" {
-		return Config{}, fmt.Errorf("ADDRESS, PROMETHEUS_URL, LOKI_URL, AWS_REGION, BEDROCK_MODEL_ID and TARGET_NAMESPACE must not be empty")
+	if cfg.Address == "" || cfg.PrometheusURL == "" || cfg.LokiURL == "" || cfg.AWSRegion == "" || cfg.BedrockModelID == "" || cfg.Namespace == "" || cfg.AlertmanagerUsername == "" {
+		return Config{}, fmt.Errorf("ADDRESS, PROMETHEUS_URL, LOKI_URL, AWS_REGION, BEDROCK_MODEL_ID, TARGET_NAMESPACE and ALERTMANAGER_USERNAME must not be empty")
 	}
 	for _, service := range cfg.WatchedServices {
 		if service == "" || service != strings.TrimSpace(service) {

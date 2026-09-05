@@ -44,7 +44,7 @@ func run() error {
 	notifier := agent.NewDiscord(cfg.DiscordWebhookURL, httpClient)
 	processor := agent.NewProcessor(cfg, telemetry, bedrock, notifier)
 	discovery := agent.NewDiscovery(cfg, telemetry, processor, catalog)
-	server := &http.Server{Addr: cfg.Address, Handler: agent.NewHTTPServer(cfg, processor, discovery).Handler(), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: cfg.Address, Handler: agent.NewHTTPServer(cfg, processor).Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	go processor.Run(ctx)
 	go discovery.Run(ctx)
