@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,6 +170,10 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 				plan = defaultPlan()
 			}
 		}
+	}
+
+	if strings.Contains(strings.ToLower(incident.Description), "policy change") && !slices.Contains(plan.Tools, ToolNetworkPolicies) {
+		plan.Tools = append(plan.Tools, ToolNetworkPolicies)
 	}
 
 	incident.Evidence = p.collector.Collect(ctx, incident, plan)
