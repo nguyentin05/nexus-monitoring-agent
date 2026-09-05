@@ -75,3 +75,25 @@ func TestMessageTextJoinsAllTextBlocks(t *testing.T) {
 		t.Fatalf("unexpected text: %q", got)
 	}
 }
+
+func TestNetworkPoliciesSummarizesPoliciesSelectingService(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apis/networking.k8s.io/v1/namespaces/apps/networkpolicies" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"items":[
+			{"metadata":{"name":"deny-service-egress"},"spec":{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"service"}},"policyTypes":["Egress"],"egress":[{"ports":[{"protocol":"UDP","port":53},{"protocol":"TCP","port":53}]}]}},
+			{"metadata":{"name":"other"},"spec":{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"other"}},"policyTypes":["Egress"]}}]}`))
+	}))
+	defer server.Close()
+
+	client := &KubeClient{baseURL: server.URL, httpClient: server.Client()}
+	policies, err := client.NetworkPolicies(context.Background(), "apps", "service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policies) != 1 || policies[0].Name != "deny-service-egress" || len(policies[0].AllowedPorts) != 2 || policies[0].AllowedPorts[0] != "UDP/53" {
+		t.Fatalf("unexpected policies: %+v", policies)
+	}
+}

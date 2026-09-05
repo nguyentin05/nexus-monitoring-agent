@@ -89,6 +89,9 @@ preflight() {
   kubectl get deployment monitoring-agent -n "$MONITORING_NAMESPACE" >/dev/null || die "monitoring-agent is unavailable"
   kubectl get prometheus monitoring-prometheus -n "$MONITORING_NAMESPACE" >/dev/null || die "Prometheus is unavailable"
   kubectl get alertmanager monitoring-alertmanager -n "$MONITORING_NAMESPACE" >/dev/null || die "Alertmanager is unavailable"
+  if [[ -z "$SCENARIO" || "$SCENARIO" == "A14" ]]; then
+    kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes >/dev/null 2>&1 || die "A14 requires the Kubernetes Metrics API; install metrics-server before benchmarking HPA behavior"
+  fi
   for resource in deployments pods services networkpolicies resourcequotas; do
     kubectl auth can-i create "$resource" -n "$NAMESPACE" | grep -Fxq yes || die "Cannot create $resource in $NAMESPACE"
     kubectl auth can-i delete "$resource" -n "$NAMESPACE" | grep -Fxq yes || die "Cannot delete $resource in $NAMESPACE"

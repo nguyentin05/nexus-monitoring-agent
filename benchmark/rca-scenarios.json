@@ -203,7 +203,7 @@
     "description": "A rollout cannot obtain its required application credentials after secret reconciliation.",
     "ground_truth": "External Secrets Operator cannot read the configured Vault secret path",
     "required_tools": ["error_logs", "kubernetes_events"],
-    "expected_concepts": [["vault"], ["external secret", "external secrets", "eso"], ["path", "secret", "permission"]],
+    "expected_concepts": [["vault"], ["external secret", "external secrets", "eso", "reconciliation"], ["path", "secret", "permission"]],
     "available_evidence": {
       "logs": [{"pod": "external-secrets-65f7", "message": "ERROR reconcile failed provider=vault path=apps/aiops-benchmark credentials: secret not found"}],
       "workload": {"desired_replicas": 1, "available_replicas": 0, "ready_pods": 0, "total_pods": 1, "restarts": 0},

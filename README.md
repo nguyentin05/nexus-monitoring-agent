@@ -21,6 +21,7 @@ The configured LLM can only choose these read-only collectors:
 - error_logs
 - workload_status
 - kubernetes_events
+- network_policies
 
 It cannot execute commands, mutate the cluster, or choose arbitrary URLs or queries.
 

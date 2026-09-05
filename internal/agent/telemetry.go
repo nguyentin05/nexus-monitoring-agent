@@ -70,6 +70,17 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 					evidence.Events = events
 				}
 			}
+		case ToolNetworkPolicies:
+			if len(evidence.NetworkPolicies) == 0 {
+				if t.kube == nil {
+					evidence.CollectionErrs = append(evidence.CollectionErrs, "Kubernetes service account is unavailable")
+				} else if policies, err := t.kube.NetworkPolicies(ctx, incident.Namespace, incident.Service); err != nil {
+					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
+				} else {
+					evidence.NetworkPolicies = policies
+				}
+			}
+
 		}
 	}
 	return evidence
@@ -301,6 +312,53 @@ func (k *KubeClient) WorkloadStatus(ctx context.Context, namespace, service stri
 		}
 	}
 	return status, nil
+}
+
+func (k *KubeClient) NetworkPolicies(ctx context.Context, namespace, service string) ([]NetworkPolicyEvidence, error) {
+	var response struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				PodSelector struct {
+					MatchLabels map[string]string `json:"matchLabels"`
+				} `json:"podSelector"`
+				PolicyTypes []string `json:"policyTypes"`
+				Egress      []struct {
+					Ports []struct {
+						Protocol string          `json:"protocol"`
+						Port     json.RawMessage `json:"port"`
+					} `json:"ports"`
+				} `json:"egress"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	path := "/apis/networking.k8s.io/v1/namespaces/" + url.PathEscape(namespace) + "/networkpolicies"
+	if err := k.get(ctx, path, &response); err != nil {
+		return nil, err
+	}
+	policies := make([]NetworkPolicyEvidence, 0, len(response.Items))
+	for _, item := range response.Items {
+		if item.Spec.PodSelector.MatchLabels["app.kubernetes.io/name"] != service {
+			continue
+		}
+		policy := NetworkPolicyEvidence{Name: item.Metadata.Name, PolicyTypes: item.Spec.PolicyTypes, PodSelector: item.Spec.PodSelector.MatchLabels, EgressRuleCount: len(item.Spec.Egress)}
+		for _, rule := range item.Spec.Egress {
+			if len(rule.Ports) == 0 {
+				policy.AllowedPorts = append(policy.AllowedPorts, "*")
+			}
+			for _, port := range rule.Ports {
+				protocol := port.Protocol
+				if protocol == "" {
+					protocol = "TCP"
+				}
+				policy.AllowedPorts = append(policy.AllowedPorts, protocol+"/"+strings.Trim(string(port.Port), "\""))
+			}
+		}
+		policies = append(policies, policy)
+	}
+	return policies, nil
 }
 
 type kubeEvent struct {
