@@ -5,3 +5,9 @@ coverage.out
 .vscode/
 
 data/
+
+# Local benchmark tooling and results
+/benchmark/
+/benchmark-results/
+/cmd/rca-benchmark/
+/scripts/benchmark-*.sh
