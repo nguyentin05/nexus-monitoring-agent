@@ -309,7 +309,7 @@ metadata:
   namespace: $NAMESPACE
   labels: {benchmark.nexus/case: "true"}
 spec:
-  scopes: [BestEffort]
+  scopes: [NotBestEffort]
   hard: {pods: "0"}
 ---
 apiVersion: apps/v1
@@ -324,7 +324,12 @@ spec:
   template:
     metadata: {labels: {benchmark.nexus/quota-run: "$ACTIVE_RUN_ID"}}
     spec:
-      containers: [{name: benchmark, image: invalid.example/nexus/quota:$ACTIVE_RUN_ID}]
+      containers:
+        - name: benchmark
+          image: $image
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
 EOF
       sleep 15; SYMPTOM="A controller cannot create its requested pod in the namespace"
       ;;
