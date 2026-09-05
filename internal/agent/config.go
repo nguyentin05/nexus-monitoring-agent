@@ -18,6 +18,7 @@ type Config struct {
 	DiscordWebhookURL  string
 	Namespace          string
 	WatchedServices    []string
+	DiscoveryServices  []string
 	PollInterval       time.Duration
 	Cooldown           time.Duration
 	HTTPTimeout        time.Duration
@@ -35,6 +36,7 @@ type Config struct {
 }
 
 func LoadConfig() (Config, error) {
+	watchedServices := env("WATCHED_SERVICES", "auth-service,profile-service")
 	cfg := Config{
 		Address:            env("ADDRESS", ":8080"),
 		Mode:               env("AGENT_MODE", "shadow"),
@@ -44,7 +46,8 @@ func LoadConfig() (Config, error) {
 		BedrockModelID:     env("BEDROCK_MODEL_ID", "global.amazon.nova-2-lite-v1:0"),
 		DiscordWebhookURL:  os.Getenv("DISCORD_WEBHOOK_URL"),
 		Namespace:          env("TARGET_NAMESPACE", "apps"),
-		WatchedServices:    strings.Split(env("WATCHED_SERVICES", "auth-service,profile-service"), ","),
+		WatchedServices:    strings.Split(watchedServices, ","),
+		DiscoveryServices:  strings.Split(env("DISCOVERY_SERVICES", watchedServices), ","),
 		CPUThreshold:       80,
 		ErrorRateThreshold: 5,
 		P99ThresholdMS:     500,
@@ -106,6 +109,11 @@ func LoadConfig() (Config, error) {
 	for _, service := range cfg.WatchedServices {
 		if service == "" || service != strings.TrimSpace(service) {
 			return Config{}, fmt.Errorf("WATCHED_SERVICES must contain comma-separated service names without spaces")
+		}
+	}
+	for _, service := range cfg.DiscoveryServices {
+		if service == "" || service != strings.TrimSpace(service) {
+			return Config{}, fmt.Errorf("DISCOVERY_SERVICES must contain comma-separated service names without spaces")
 		}
 	}
 	return cfg, nil

@@ -36,7 +36,7 @@ func (d *Discovery) Run(ctx context.Context) {
 func (d *Discovery) RunOnce(ctx context.Context) int {
 	d.processor.Stats.Polls.Add(1)
 	found := 0
-	for _, service := range d.cfg.WatchedServices {
+	for _, service := range d.cfg.DiscoveryServices {
 		metrics, metricErr := d.telemetry.ServiceMetrics(ctx, service)
 		logs, logErr := d.telemetry.ErrorLogs(ctx, service, 5*time.Minute)
 		if metricErr != nil {

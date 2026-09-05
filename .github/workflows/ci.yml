@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.head_ref }}
-          token: ${{ secrets.NEXUS_CICD_BOT_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Setup Go
         uses: actions/setup-go@v6

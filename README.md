@@ -51,6 +51,7 @@ The AWS SDK uses its default credential chain, including EKS IRSA.
 | PROMETHEUS_URL | in-cluster Prometheus service |
 | LOKI_URL | in-cluster Loki gateway |
 | WATCHED_SERVICES | auth-service,profile-service |
+| DISCOVERY_SERVICES | WATCHED_SERVICES |
 | POLL_INTERVAL | 1m |
 | INCIDENT_COOLDOWN | 10m |
 | MAX_BEDROCK_CALLS_PER_HOUR | 20; 0 means unlimited |
