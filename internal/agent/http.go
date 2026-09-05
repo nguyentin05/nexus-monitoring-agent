@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,18 +11,25 @@ import (
 )
 
 type HTTPServer struct {
-	cfg       Config
-	processor *Processor
-	discovery *Discovery
-	watched   map[string]struct{}
+	cfg          Config
+	processor    *Processor
+	watched      map[string]struct{}
+	authenticate func(context.Context, string) (bool, error)
 }
 
-func NewHTTPServer(cfg Config, processor *Processor, discovery *Discovery) *HTTPServer {
+func NewHTTPServer(cfg Config, processor *Processor) *HTTPServer {
 	watched := make(map[string]struct{}, len(cfg.WatchedServices))
 	for _, service := range cfg.WatchedServices {
 		watched[service] = struct{}{}
 	}
-	return &HTTPServer{cfg: cfg, processor: processor, discovery: discovery, watched: watched}
+	kube := newKubeClient(cfg.HTTPTimeout)
+	authenticate := func(ctx context.Context, token string) (bool, error) {
+		if kube == nil {
+			return false, fmt.Errorf("Kubernetes service account is unavailable")
+		}
+		return kube.AuthenticateServiceAccount(ctx, token, cfg.AlertmanagerUsername)
+	}
+	return &HTTPServer{cfg: cfg, processor: processor, watched: watched, authenticate: authenticate}
 }
 
 func (s *HTTPServer) Handler() http.Handler {
@@ -39,9 +47,6 @@ func (s *HTTPServer) Handler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = io.WriteString(w, s.processor.Metrics())
 	})
-	mux.HandleFunc("POST /trigger", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusAccepted, map[string]int{"incidents_submitted": s.discovery.RunOnce(r.Context())})
-	})
 	mux.HandleFunc("POST /alerts", s.alerts)
 	return mux
 }
@@ -58,6 +63,23 @@ type alertmanagerPayload struct {
 }
 
 func (s *HTTPServer) alerts(w http.ResponseWriter, r *http.Request) {
+	token, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	authenticated, err := s.authenticate(r.Context(), token)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication unavailable"})
+		return
+	}
+	if !authenticated {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
 	var payload alertmanagerPayload
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err := decoder.Decode(&payload); err != nil {
@@ -70,8 +92,15 @@ func (s *HTTPServer) alerts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		service := first(alert.Labels, "service", "job", "app", "container", "container_name")
-		if _, ok := s.watched[service]; !ok {
-			continue
+		if isNodeAlert(alert.Labels["alertname"]) {
+			service = alert.Labels["node"]
+			if service == "" {
+				continue
+			}
+		} else {
+			if _, ok := s.watched[service]; !ok {
+				continue
+			}
 		}
 		namespace := first(alert.Labels, "namespace", "k8s_ns_name")
 		if namespace == "" {
@@ -113,10 +142,24 @@ func alertKind(alertName string) string {
 	case "NexusPodFrequentRestarts":
 		return "frequent_restarts"
 	case "NodeHighCpuUsage":
-		return "cpu_high"
+		return "node_cpu_high"
+	case "NodeHighMemoryUsage":
+		return "node_memory_high"
 	default:
 		return strings.ToLower(alertName)
 	}
+}
+
+func isNodeAlert(alertName string) bool {
+	return alertName == "NodeHighCpuUsage" || alertName == "NodeHighMemoryUsage"
+}
+
+func bearerToken(header string) (string, bool) {
+	scheme, token, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" || strings.Contains(token, " ") {
+		return "", false
+	}
+	return token, true
 }
 
 func first(values map[string]string, keys ...string) string {
