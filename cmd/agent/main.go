@@ -55,7 +55,7 @@ func run() error {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	slog.Info("Nexus monitoring agent started", "address", cfg.Address, "services", cfg.WatchedServices, "model", cfg.BedrockModelID)
+	slog.Info("Nexus monitoring agent started", "address", cfg.Address, "services", cfg.WatchedServices, "discovery_services", cfg.DiscoveryServices, "model", cfg.BedrockModelID)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
