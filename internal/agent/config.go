@@ -9,54 +9,60 @@ import (
 )
 
 type Config struct {
-	Address            string
-	Mode               string
-	PrometheusURL      string
-	LokiURL            string
-	AWSRegion          string
-	BedrockModelID     string
-	DiscordWebhookURL  string
-	Namespace          string
-	WatchedServices    []string
-	DiscoveryServices  []string
-	PollInterval       time.Duration
-	Cooldown           time.Duration
-	HTTPTimeout        time.Duration
-	BedrockTimeout     time.Duration
-	RCACacheTTL        time.Duration
-	CPUThreshold       float64
-	ErrorRateThreshold float64
-	P99ThresholdMS     float64
-	MaxLogSamples      int
-	QueueSize          int
-	MaxBedrockCalls    int
-	PatternStatePath   string
-	PatternAutoPromote int
-	MaxPatterns        int
+	Address                     string
+	Mode                        string
+	PrometheusURL               string
+	LokiURL                     string
+	AWSRegion                   string
+	BedrockModelID              string
+	DiscordWebhookURL           string
+	Namespace                   string
+	WatchedServices             []string
+	DiscoveryServices           []string
+	PollInterval                time.Duration
+	Cooldown                    time.Duration
+	HTTPTimeout                 time.Duration
+	BedrockTimeout              time.Duration
+	RCACacheTTL                 time.Duration
+	CPUThreshold                float64
+	ErrorRateThreshold          float64
+	P99ThresholdMS              float64
+	MaxLogSamples               int
+	QueueSize                   int
+	MaxBedrockCalls             int
+	PatternStatePath            string
+	PatternAutoPromote          int
+	MaxPatterns                 int
+	AdaptivePlanMinObservations int
+	AdaptivePlanMinServices     int
+	AdaptivePlanShadowMatches   int
 }
 
 func LoadConfig() (Config, error) {
 	watchedServices := env("WATCHED_SERVICES", "auth-service,profile-service")
 	cfg := Config{
-		Address:            env("ADDRESS", ":8080"),
-		Mode:               env("AGENT_MODE", "shadow"),
-		PrometheusURL:      env("PROMETHEUS_URL", "http://monitoring-prometheus.monitoring.svc.cluster.local:9090"),
-		LokiURL:            env("LOKI_URL", "http://loki-gateway.monitoring.svc.cluster.local"),
-		AWSRegion:          env("AWS_REGION", "ap-southeast-1"),
-		BedrockModelID:     env("BEDROCK_MODEL_ID", "global.amazon.nova-2-lite-v1:0"),
-		DiscordWebhookURL:  os.Getenv("DISCORD_WEBHOOK_URL"),
-		Namespace:          env("TARGET_NAMESPACE", "apps"),
-		WatchedServices:    strings.Split(watchedServices, ","),
-		DiscoveryServices:  strings.Split(env("DISCOVERY_SERVICES", watchedServices), ","),
-		CPUThreshold:       80,
-		ErrorRateThreshold: 5,
-		P99ThresholdMS:     500,
-		MaxLogSamples:      10,
-		QueueSize:          64,
-		MaxBedrockCalls:    20,
-		PatternStatePath:   os.Getenv("PATTERN_STATE_PATH"),
-		PatternAutoPromote: 3,
-		MaxPatterns:        1000,
+		Address:                     env("ADDRESS", ":8080"),
+		Mode:                        env("AGENT_MODE", "shadow"),
+		PrometheusURL:               env("PROMETHEUS_URL", "http://monitoring-prometheus.monitoring.svc.cluster.local:9090"),
+		LokiURL:                     env("LOKI_URL", "http://loki-gateway.monitoring.svc.cluster.local"),
+		AWSRegion:                   env("AWS_REGION", "ap-southeast-1"),
+		BedrockModelID:              env("BEDROCK_MODEL_ID", "global.amazon.nova-2-lite-v1:0"),
+		DiscordWebhookURL:           os.Getenv("DISCORD_WEBHOOK_URL"),
+		Namespace:                   env("TARGET_NAMESPACE", "apps"),
+		WatchedServices:             strings.Split(watchedServices, ","),
+		DiscoveryServices:           strings.Split(env("DISCOVERY_SERVICES", watchedServices), ","),
+		CPUThreshold:                80,
+		ErrorRateThreshold:          5,
+		P99ThresholdMS:              500,
+		MaxLogSamples:               10,
+		QueueSize:                   64,
+		MaxBedrockCalls:             20,
+		PatternStatePath:            os.Getenv("PATTERN_STATE_PATH"),
+		PatternAutoPromote:          3,
+		MaxPatterns:                 1000,
+		AdaptivePlanMinObservations: 5,
+		AdaptivePlanMinServices:     2,
+		AdaptivePlanShadowMatches:   3,
 	}
 
 	var err error
@@ -97,6 +103,16 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MaxPatterns, err = intEnv("MAX_PATTERNS", cfg.MaxPatterns); err != nil {
+		return Config{}, err
+	}
+
+	if cfg.AdaptivePlanMinObservations, err = intEnv("ADAPTIVE_PLAN_MIN_OBSERVATIONS", cfg.AdaptivePlanMinObservations); err != nil {
+		return Config{}, err
+	}
+	if cfg.AdaptivePlanMinServices, err = intEnv("ADAPTIVE_PLAN_MIN_SERVICES", cfg.AdaptivePlanMinServices); err != nil {
+		return Config{}, err
+	}
+	if cfg.AdaptivePlanShadowMatches, err = intEnv("ADAPTIVE_PLAN_SHADOW_MATCHES", cfg.AdaptivePlanShadowMatches); err != nil {
 		return Config{}, err
 	}
 
