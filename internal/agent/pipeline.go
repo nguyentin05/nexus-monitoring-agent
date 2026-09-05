@@ -92,7 +92,7 @@ func NewProcessor(cfg Config, collector EvidenceCollector, llm LLM, notifier Out
 		notifier:  notifier,
 		queue:     make(chan Incident, cfg.QueueSize),
 		seen:      make(map[string]time.Time),
-		budget:    newCallBudget(cfg.MaxBedrockCalls),
+		budget:    newCallBudget(cfg.MaxBedrockCalls, cfg.StateFile("call-budget.json")),
 		rcaCache:  make(map[string]rcaCacheEntry),
 		adaptive:  newAdaptivePlanRegistry(cfg),
 	}

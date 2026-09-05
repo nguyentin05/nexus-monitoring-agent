@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -30,16 +31,32 @@ type adaptivePlanRegistry struct {
 	shadowMatches   int
 	maxEntries      int
 	entries         map[string]*adaptivePlanEntry
+	path            string
 }
 
 func newAdaptivePlanRegistry(cfg Config) *adaptivePlanRegistry {
-	return &adaptivePlanRegistry{
+	registry := &adaptivePlanRegistry{
 		minObservations: cfg.AdaptivePlanMinObservations,
 		minServices:     cfg.AdaptivePlanMinServices,
 		shadowMatches:   cfg.AdaptivePlanShadowMatches,
 		maxEntries:      cfg.MaxPatterns,
 		entries:         make(map[string]*adaptivePlanEntry),
+		path:            cfg.StateFile("adaptive-plans.json"),
 	}
+	state := struct {
+		Entries map[string]*adaptivePlanEntry `json:"entries"`
+	}{}
+	if err := loadState(registry.path, &state); err != nil {
+		slog.Warn("load adaptive plan state", "error", err)
+	} else if state.Entries != nil {
+		registry.entries = state.Entries
+		for _, entry := range registry.entries {
+			if entry.Services == nil {
+				entry.Services = make(map[string]struct{})
+			}
+		}
+	}
+	return registry
 }
 
 func (r *adaptivePlanRegistry) Lookup(incident Incident) (CollectionPlan, bool) {
@@ -60,6 +77,7 @@ func (r *adaptivePlanRegistry) Observe(incident Incident, plan CollectionPlan) b
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.persistLocked()
 	entry := r.entries[key]
 	if entry == nil || !slices.Equal(entry.Tools, tools) {
 		r.entries[key] = &adaptivePlanEntry{Tools: tools, State: adaptiveCandidate, Observations: 1, Services: map[string]struct{}{incident.Service: {}}, LastObservedAt: now}
@@ -93,7 +111,17 @@ func (r *adaptivePlanRegistry) Demote(incident Incident) bool {
 	}
 	entry.State = adaptiveShadow
 	entry.ShadowMatches = 0
+	r.persistLocked()
 	return true
+}
+
+func (r *adaptivePlanRegistry) persistLocked() {
+	state := struct {
+		Entries map[string]*adaptivePlanEntry `json:"entries"`
+	}{Entries: r.entries}
+	if err := saveState(r.path, state); err != nil {
+		slog.Warn("persist adaptive plan state", "error", err)
+	}
 }
 
 func (r *adaptivePlanRegistry) Counts() map[string]int {
