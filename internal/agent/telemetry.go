@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,7 +43,7 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 			}
 		case ToolErrorLogs:
 			if len(evidence.Logs) == 0 {
-				logs, err := t.ErrorLogs(ctx, incident.Service, 5*time.Minute)
+				logs, err := t.ErrorLogs(ctx, incident.Service, incidentLookback(incident.StartedAt, time.Now()))
 				if err != nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
 				} else {
@@ -63,7 +64,7 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 			if len(evidence.Events) == 0 {
 				if t.kube == nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, "Kubernetes service account is unavailable")
-				} else if events, err := t.kube.Events(ctx, incident.Namespace, incident.Service); err != nil {
+				} else if events, err := t.kube.Events(ctx, incident.Namespace, incident.Service, incident.StartedAt); err != nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
 				} else {
 					evidence.Events = events
@@ -302,30 +303,68 @@ func (k *KubeClient) WorkloadStatus(ctx context.Context, namespace, service stri
 	return status, nil
 }
 
-func (k *KubeClient) Events(ctx context.Context, namespace, service string) ([]KubernetesEvent, error) {
+type kubeEvent struct {
+	Type          string    `json:"type"`
+	Reason        string    `json:"reason"`
+	Message       string    `json:"message"`
+	EventTime     time.Time `json:"eventTime"`
+	LastTimestamp time.Time `json:"lastTimestamp"`
+	Metadata      struct {
+		CreationTimestamp time.Time `json:"creationTimestamp"`
+	} `json:"metadata"`
+	Involved struct {
+		Name string `json:"name"`
+	} `json:"involvedObject"`
+}
+
+func (e kubeEvent) timestamp() time.Time {
+	if !e.EventTime.IsZero() {
+		return e.EventTime
+	}
+	if !e.LastTimestamp.IsZero() {
+		return e.LastTimestamp
+	}
+	return e.Metadata.CreationTimestamp
+}
+
+func (k *KubeClient) Events(ctx context.Context, namespace, service string, startedAt time.Time) ([]KubernetesEvent, error) {
 	var response struct {
-		Items []struct {
-			Type     string `json:"type"`
-			Reason   string `json:"reason"`
-			Message  string `json:"message"`
-			Involved struct {
-				Name string `json:"name"`
-			} `json:"involvedObject"`
-		} `json:"items"`
+		Items []kubeEvent `json:"items"`
 	}
 	path := "/api/v1/namespaces/" + url.PathEscape(namespace) + "/events?limit=100"
 	if err := k.get(ctx, path, &response); err != nil {
 		return nil, err
 	}
+	sort.Slice(response.Items, func(i, j int) bool {
+		return response.Items[i].timestamp().After(response.Items[j].timestamp())
+	})
+	cutoff := startedAt.Add(-2 * time.Minute)
 	events := make([]KubernetesEvent, 0, 10)
-	for i := len(response.Items) - 1; i >= 0 && len(events) < 10; i-- {
-		event := response.Items[i]
-		if !strings.HasPrefix(event.Involved.Name, service) {
+	for _, event := range response.Items {
+		if len(events) == cap(events) {
+			break
+		}
+		timestamp := event.timestamp()
+		if (!startedAt.IsZero() && timestamp.Before(cutoff)) || (event.Involved.Name != service && !strings.HasPrefix(event.Involved.Name, service+"-")) {
 			continue
 		}
-		events = append(events, KubernetesEvent{Type: event.Type, Reason: event.Reason, Object: event.Involved.Name, Message: redact(event.Message, 500)})
+		events = append(events, KubernetesEvent{Timestamp: timestamp, Type: event.Type, Reason: event.Reason, Object: event.Involved.Name, Message: redact(event.Message, 500)})
 	}
 	return events, nil
+}
+
+func incidentLookback(startedAt, now time.Time) time.Duration {
+	if startedAt.IsZero() {
+		return 5 * time.Minute
+	}
+	lookback := now.Sub(startedAt) + 2*time.Minute
+	if lookback < 2*time.Minute {
+		return 2 * time.Minute
+	}
+	if lookback > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return lookback
 }
 
 type redactionRule struct {

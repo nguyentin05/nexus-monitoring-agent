@@ -65,10 +65,11 @@ type WorkloadStatus struct {
 }
 
 type KubernetesEvent struct {
-	Type    string `json:"type"`
-	Reason  string `json:"reason"`
-	Object  string `json:"object"`
-	Message string `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+	Reason    string    `json:"reason"`
+	Object    string    `json:"object"`
+	Message   string    `json:"message"`
 }
 
 type Evidence struct {

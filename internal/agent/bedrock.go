@@ -128,11 +128,24 @@ func (b *Bedrock) converse(ctx context.Context, systemPrompt, userPrompt string,
 	if !ok || len(output.Value.Content) == 0 {
 		return "", tokenUsage(response), errors.New("Bedrock returned no message")
 	}
-	content, ok := output.Value.Content[0].(*types.ContentBlockMemberText)
-	if !ok {
-		return "", tokenUsage(response), errors.New("Bedrock returned non-text content")
+	content, err := messageText(output.Value.Content)
+	if err != nil {
+		return "", tokenUsage(response), err
 	}
-	return content.Value, tokenUsage(response), nil
+	return content, tokenUsage(response), nil
+}
+
+func messageText(blocks []types.ContentBlock) (string, error) {
+	var textBlocks []string
+	for _, block := range blocks {
+		if content, ok := block.(*types.ContentBlockMemberText); ok {
+			textBlocks = append(textBlocks, content.Value)
+		}
+	}
+	if len(textBlocks) == 0 {
+		return "", errors.New("Bedrock returned non-text content")
+	}
+	return strings.Join(textBlocks, "\n"), nil
 }
 
 func tokenUsage(response *bedrockruntime.ConverseOutput) TokenUsage {
