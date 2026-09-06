@@ -139,6 +139,8 @@ func alertKind(alertName string) string {
 	switch alertName {
 	case "NexusServiceHigh5xxRate":
 		return "error_rate_high"
+	case "NexusServiceHighP99Latency":
+		return "latency_high"
 	case "NexusPodFrequentRestarts":
 		return "frequent_restarts"
 	case "NodeHighCpuUsage":

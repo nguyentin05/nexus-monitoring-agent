@@ -15,7 +15,7 @@ func TestAdaptivePlansPersistAcrossRestart(t *testing.T) {
 	}
 	auth := Incident{AlertName: "DependencyFailure", Kind: "dependency_failure", Service: "auth-service", Description: "auth-service dependency timed out"}
 	profile := Incident{AlertName: auth.AlertName, Kind: auth.Kind, Service: "profile-service", Description: "profile-service dependency timed out"}
-	plan := CollectionPlan{Tools: []string{ToolErrorLogs}}
+	plan := planFor("test", ToolErrorLogs)
 
 	registry := newAdaptivePlanRegistry(cfg)
 	registry.Observe(auth, plan)

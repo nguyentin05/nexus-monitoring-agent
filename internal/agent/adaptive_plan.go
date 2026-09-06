@@ -2,26 +2,28 @@ package agent
 
 import (
 	"log/slog"
-	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	adaptiveCandidate = "candidate"
-	adaptiveShadow    = "shadow"
-	adaptiveActive    = "active"
+	adaptiveCandidate              = "candidate"
+	adaptiveShadow                 = "shadow"
+	adaptiveActive                 = "active"
+	adaptiveMaxConsecutiveFailures = 2
+	adaptiveObservationWindow      = 24 * time.Hour
 )
 
 type adaptivePlanEntry struct {
-	Tools          []string
-	State          string
-	Observations   int
-	ShadowMatches  int
-	Services       map[string]struct{}
-	LastObservedAt time.Time
+	Plan                CollectionPlan
+	PlanFingerprint     string
+	State               string
+	Observations        int
+	ShadowMatches       int
+	ConsecutiveFailures int
+	Services            map[string]struct{}
+	LastObservedAt      time.Time
 }
 
 type adaptivePlanRegistry struct {
@@ -35,28 +37,28 @@ type adaptivePlanRegistry struct {
 }
 
 func newAdaptivePlanRegistry(cfg Config) *adaptivePlanRegistry {
-	registry := &adaptivePlanRegistry{
-		minObservations: cfg.AdaptivePlanMinObservations,
-		minServices:     cfg.AdaptivePlanMinServices,
-		shadowMatches:   cfg.AdaptivePlanShadowMatches,
-		maxEntries:      cfg.MaxPatterns,
-		entries:         make(map[string]*adaptivePlanEntry),
-		path:            cfg.StateFile("adaptive-plans.json"),
-	}
+	r := &adaptivePlanRegistry{minObservations: cfg.AdaptivePlanMinObservations, minServices: cfg.AdaptivePlanMinServices, shadowMatches: cfg.AdaptivePlanShadowMatches, maxEntries: cfg.MaxPatterns, entries: make(map[string]*adaptivePlanEntry), path: cfg.StateFile("adaptive-rules.json")}
 	state := struct {
 		Entries map[string]*adaptivePlanEntry `json:"entries"`
 	}{}
-	if err := loadState(registry.path, &state); err != nil {
+	if err := loadState(r.path, &state); err != nil {
 		slog.Warn("load adaptive plan state", "error", err)
 	} else if state.Entries != nil {
-		registry.entries = state.Entries
-		for _, entry := range registry.entries {
+		r.entries = state.Entries
+		for key, entry := range r.entries {
+			normalized, err := normalizeCollectionPlan(entry.Plan)
+			if err != nil {
+				delete(r.entries, key)
+				continue
+			}
+			entry.Plan = normalized
+			entry.PlanFingerprint = collectionPlanFingerprint(normalized)
 			if entry.Services == nil {
 				entry.Services = make(map[string]struct{})
 			}
 		}
 	}
-	return registry
+	return r
 }
 
 func (r *adaptivePlanRegistry) Lookup(incident Incident) (CollectionPlan, bool) {
@@ -66,21 +68,23 @@ func (r *adaptivePlanRegistry) Lookup(incident Incident) (CollectionPlan, bool) 
 	if entry == nil || entry.State != adaptiveActive {
 		return CollectionPlan{}, false
 	}
-	return CollectionPlan{Tools: slices.Clone(entry.Tools), Reason: "adaptive plan"}, true
+	plan := cloneCollectionPlan(entry.Plan)
+	plan.Reason = "verified adaptive rule"
+	return plan, true
 }
 
 func (r *adaptivePlanRegistry) Observe(incident Incident, plan CollectionPlan) bool {
-	tools := slices.Clone(plan.Tools)
-	sort.Strings(tools)
-	key := adaptivePlanKey(incident)
-	now := time.Now().UTC()
-
+	normalized, err := normalizeCollectionPlan(plan)
+	if err != nil {
+		return false
+	}
+	fingerprint, key, now := collectionPlanFingerprint(normalized), adaptivePlanKey(incident), time.Now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.persistLocked()
 	entry := r.entries[key]
-	if entry == nil || !slices.Equal(entry.Tools, tools) {
-		r.entries[key] = &adaptivePlanEntry{Tools: tools, State: adaptiveCandidate, Observations: 1, Services: map[string]struct{}{incident.Service: {}}, LastObservedAt: now}
+	if entry == nil || entry.PlanFingerprint != fingerprint || now.Sub(entry.LastObservedAt) > adaptiveObservationWindow {
+		r.entries[key] = &adaptivePlanEntry{Plan: normalized, PlanFingerprint: fingerprint, State: adaptiveCandidate, Observations: 1, Services: map[string]struct{}{incident.Service: {}}, LastObservedAt: now}
 		r.evictLocked()
 		return false
 	}
@@ -102,15 +106,28 @@ func (r *adaptivePlanRegistry) Observe(incident Incident, plan CollectionPlan) b
 	return false
 }
 
-func (r *adaptivePlanRegistry) Demote(incident Incident) bool {
+func (r *adaptivePlanRegistry) RecordValidation(incident Incident, valid bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry := r.entries[adaptivePlanKey(incident)]
 	if entry == nil || entry.State != adaptiveActive {
 		return false
 	}
+	if valid {
+		if entry.ConsecutiveFailures > 0 {
+			entry.ConsecutiveFailures = 0
+			r.persistLocked()
+		}
+		return false
+	}
+	entry.ConsecutiveFailures++
+	if entry.ConsecutiveFailures < adaptiveMaxConsecutiveFailures {
+		r.persistLocked()
+		return false
+	}
 	entry.State = adaptiveShadow
 	entry.ShadowMatches = 0
+	entry.ConsecutiveFailures = 0
 	r.persistLocked()
 	return true
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -197,16 +196,13 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 		}
 	}
 
-	if strings.Contains(strings.ToLower(incident.Description), "policy change") && !slices.Contains(plan.Tools, ToolNetworkPolicies) {
-		plan.Tools = append(plan.Tools, ToolNetworkPolicies)
+	if strings.Contains(strings.ToLower(incident.Description), "policy change") && !planHasTool(plan, ToolNetworkPolicies) {
+		plan.Steps = append(plan.Steps, CollectionStep{Tool: ToolNetworkPolicies, Target: TargetIncidentService})
 	}
 
 	incident.Evidence = p.collector.Collect(ctx, incident, plan)
 	if !p.budget.Allow(time.Now()) {
 		p.Stats.BudgetLimited.Add(1)
-		if adaptive && p.adaptive.Demote(incident) {
-			p.Stats.AdaptiveDemoted.Add(1)
-		}
 		return p.fallback(incident, path, plannerErr, fmt.Errorf("LLM hourly call budget exhausted"))
 	}
 
@@ -214,19 +210,16 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 	result, usage, err := p.llm.Analyze(ctx, incident)
 	p.addUsage(usage)
 	if err != nil {
-		if adaptive && p.adaptive.Demote(incident) {
-			p.Stats.AdaptiveDemoted.Add(1)
-		}
 		return p.fallback(incident, path, plannerErr, err)
 	}
-	if adaptive && (result.Confidence == "low" || len(incident.Evidence.CollectionErrs) > 0) {
-		if p.adaptive.Demote(incident) {
+	if adaptive && len(incident.Evidence.CollectionErrs) == 0 {
+		if p.adaptive.RecordValidation(incident, result.Confidence != "low") {
 			p.Stats.AdaptiveDemoted.Add(1)
 		}
 	} else if path == "llm_planner" && plannerErr == nil && result.Confidence != "low" && len(incident.Evidence.CollectionErrs) == 0 {
 		if p.adaptive.Observe(incident, plan) {
 			p.Stats.AdaptivePromoted.Add(1)
-			slog.Info("adaptive collection plan promoted", "kind", incident.Kind, "alert", incident.AlertName, "tools", plan.Tools)
+			slog.Info("adaptive collection plan promoted", "kind", incident.Kind, "alert", incident.AlertName, "steps", plan.Steps)
 		}
 	}
 	if result.Confidence != "low" && len(incident.Evidence.CollectionErrs) == 0 {
@@ -296,24 +289,42 @@ func (p *Processor) addUsage(usage TokenUsage) {
 
 func knownPlan(incident Incident) (CollectionPlan, bool) {
 	plans := map[string][]string{
-		"error_rate_high":   {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus},
-		"latency_high":      {ToolServiceMetrics, ToolErrorLogs},
-		"cpu_high":          {ToolServiceMetrics, ToolWorkloadStatus, ToolErrorLogs},
-		"node_cpu_high":     nil,
-		"node_memory_high":  nil,
-		"frequent_restarts": {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus, ToolKubernetesEvents},
-		"exception_pattern": {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus},
-		"novel_log_pattern": {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus},
+		"error_rate_high":   {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus, ToolTraceContext, ToolRecentChanges},
+		"latency_high":      {ToolServiceMetrics, ToolErrorLogs, ToolTraceContext, ToolRecentChanges},
+		"cpu_high":          {ToolServiceMetrics, ToolWorkloadStatus, ToolRecentChanges},
+		"node_cpu_high":     {ToolNodeStatus},
+		"node_memory_high":  {ToolNodeStatus},
+		"frequent_restarts": {ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus, ToolKubernetesEvents, ToolRecentChanges},
+		"exception_pattern": {ToolErrorLogs, ToolWorkloadStatus, ToolTraceContext, ToolRecentChanges},
+		"novel_log_pattern": {ToolErrorLogs, ToolWorkloadStatus, ToolRecentChanges},
 	}
 	tools, ok := plans[incident.Kind]
 	if !ok {
 		return CollectionPlan{}, false
 	}
-	return CollectionPlan{Tools: tools, Reason: "predefined plan for " + incident.Kind}, true
+	return planFor("predefined plan for "+incident.Kind, tools...), true
 }
 
 func defaultPlan() CollectionPlan {
-	return CollectionPlan{Tools: []string{ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus, ToolKubernetesEvents}, Reason: "safe fallback plan"}
+	return planFor("safe fallback plan", ToolServiceMetrics, ToolErrorLogs, ToolWorkloadStatus, ToolKubernetesEvents, ToolRecentChanges)
+}
+
+func planFor(reason string, tools ...string) CollectionPlan {
+	plan := CollectionPlan{Reason: reason}
+	for _, tool := range tools {
+		plan.Steps = append(plan.Steps, CollectionStep{Tool: tool})
+	}
+	normalized, _ := normalizeCollectionPlan(plan)
+	return normalized
+}
+
+func planHasTool(plan CollectionPlan, tool string) bool {
+	for _, step := range plan.Steps {
+		if step.Tool == tool {
+			return true
+		}
+	}
+	return false
 }
 
 func deterministicRCA(incident Incident, reason string) RCAResult {

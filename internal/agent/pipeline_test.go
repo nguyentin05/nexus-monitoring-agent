@@ -2,22 +2,31 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
 
 type fakeLLM struct {
-	plans    int
-	analyses int
+	plans      int
+	analyses   int
+	result     *RCAResult
+	analyzeErr error
 }
 
 func (f *fakeLLM) Plan(context.Context, Incident) (CollectionPlan, TokenUsage, error) {
 	f.plans++
-	return CollectionPlan{Tools: []string{ToolErrorLogs}}, TokenUsage{Input: 10}, nil
+	return planFor("test", ToolErrorLogs), TokenUsage{Input: 10}, nil
 }
 
 func (f *fakeLLM) Analyze(context.Context, Incident) (RCAResult, TokenUsage, error) {
 	f.analyses++
+	if f.analyzeErr != nil {
+		return RCAResult{}, TokenUsage{}, f.analyzeErr
+	}
+	if f.result != nil {
+		return *f.result, TokenUsage{Input: 20, Output: 5}, nil
+	}
 	return RCAResult{RootCause: "test", Confidence: "high", SuggestedActions: []string{"inspect"}}, TokenUsage{Input: 20, Output: 5}, nil
 }
 
@@ -69,8 +78,8 @@ func TestPolicyChangeAlwaysCollectsNetworkPolicies(t *testing.T) {
 	processor := NewProcessor(Config{QueueSize: 1}, collector, &fakeLLM{}, fakeNotifier{})
 	processor.Process(context.Background(), Incident{Kind: "unknown_signal", Description: "dependency unreachable after a policy change"})
 
-	if len(collector.plan.Tools) != 2 || collector.plan.Tools[1] != ToolNetworkPolicies {
-		t.Fatalf("unexpected plan: %+v", collector.plan.Tools)
+	if !planHasTool(collector.plan, ToolNetworkPolicies) {
+		t.Fatalf("unexpected plan: %+v", collector.plan.Steps)
 	}
 }
 
@@ -90,6 +99,75 @@ func TestAdaptivePlanPromotesAfterCrossServiceShadowValidation(t *testing.T) {
 	}
 	if processor.Stats.AdaptivePromoted.Load() != 1 || processor.Stats.PlannerSaved.Load() != 1 {
 		t.Fatalf("promoted=%d saved=%d", processor.Stats.AdaptivePromoted.Load(), processor.Stats.PlannerSaved.Load())
+	}
+}
+
+func activateAdaptivePlan(processor *Processor, incident Incident) {
+	processor.adaptive.entries[adaptivePlanKey(incident)] = &adaptivePlanEntry{
+		Plan:            planFor("test", ToolErrorLogs),
+		PlanFingerprint: collectionPlanFingerprint(planFor("test", ToolErrorLogs)),
+		State:           adaptiveActive,
+		Services:        map[string]struct{}{incident.Service: {}},
+	}
+}
+
+func TestAdaptivePlanIgnoresInconclusiveFailures(t *testing.T) {
+	low := RCAResult{RootCause: "insufficient evidence", Confidence: "low"}
+	tests := []struct {
+		name          string
+		llm           *fakeLLM
+		evidence      Evidence
+		exhaustBudget bool
+	}{
+		{name: "LLM error", llm: &fakeLLM{analyzeErr: errors.New("bedrock unavailable")}},
+		{name: "collector error", llm: &fakeLLM{result: &low}, evidence: Evidence{CollectionErrs: []string{"loki unavailable"}}},
+		{name: "budget exhausted", llm: &fakeLLM{}, exhaustBudget: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			maxCalls := 0
+			if test.exhaustBudget {
+				maxCalls = 1
+			}
+			processor := NewProcessor(Config{QueueSize: 1, MaxBedrockCalls: maxCalls}, &fakeCollector{}, test.llm, fakeNotifier{})
+			incident := Incident{AlertName: "DependencyFailure", Kind: "dependency_failure", Service: "auth-service", Description: "dependency timed out", Evidence: test.evidence}
+			activateAdaptivePlan(processor, incident)
+			if test.exhaustBudget {
+				processor.budget.Allow(time.Now())
+			}
+
+			processor.Process(context.Background(), incident)
+
+			entry := processor.adaptive.entries[adaptivePlanKey(incident)]
+			if entry.State != adaptiveActive || entry.ConsecutiveFailures != 0 || processor.Stats.AdaptiveDemoted.Load() != 0 {
+				t.Fatalf("state=%s failures=%d demoted=%d", entry.State, entry.ConsecutiveFailures, processor.Stats.AdaptiveDemoted.Load())
+			}
+		})
+	}
+}
+
+func TestAdaptivePlanDemotesOnlyAfterConsecutiveConclusiveFailures(t *testing.T) {
+	low := RCAResult{RootCause: "insufficient evidence", Confidence: "low"}
+	high := RCAResult{RootCause: "dependency unavailable", Confidence: "high"}
+	llm := &fakeLLM{result: &low}
+	processor := NewProcessor(Config{QueueSize: 1}, &fakeCollector{}, llm, fakeNotifier{})
+	incident := Incident{AlertName: "DependencyFailure", Kind: "dependency_failure", Service: "auth-service", Description: "dependency timed out"}
+	activateAdaptivePlan(processor, incident)
+
+	processor.Process(context.Background(), incident)
+	llm.result = &high
+	processor.Process(context.Background(), incident)
+	llm.result = &low
+	processor.Process(context.Background(), incident)
+
+	entry := processor.adaptive.entries[adaptivePlanKey(incident)]
+	if entry.State != adaptiveActive || entry.ConsecutiveFailures != 1 {
+		t.Fatalf("successful RCA did not reset failures: state=%s failures=%d", entry.State, entry.ConsecutiveFailures)
+	}
+	processor.Process(context.Background(), incident)
+	if entry.State != adaptiveShadow || entry.ConsecutiveFailures != 0 || processor.Stats.AdaptiveDemoted.Load() != 1 {
+		t.Fatalf("state=%s failures=%d demoted=%d", entry.State, entry.ConsecutiveFailures, processor.Stats.AdaptiveDemoted.Load())
 	}
 }
 

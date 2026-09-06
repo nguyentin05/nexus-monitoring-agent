@@ -31,11 +31,11 @@ func NewTelemetry(cfg Config, httpClient *http.Client) *Telemetry {
 
 func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan CollectionPlan) Evidence {
 	evidence := incident.Evidence
-	for _, tool := range plan.Tools {
-		switch tool {
+	for _, step := range plan.Steps {
+		switch step.Tool {
 		case ToolServiceMetrics:
 			if evidence.Metrics == nil {
-				metrics, err := t.ServiceMetrics(ctx, incident.Service)
+				metrics, err := t.ServiceMetrics(ctx, incident.Service, step.Metrics)
 				if err != nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
 				} else {
@@ -44,7 +44,7 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 			}
 		case ToolErrorLogs:
 			if len(evidence.Logs) == 0 {
-				logs, err := t.ErrorLogs(ctx, incident.Service, incidentLookback(incident.StartedAt, time.Now()))
+				logs, err := t.filteredErrorLogs(ctx, incident.Service, time.Duration(step.LookbackMinutes)*time.Minute, step.LogTerms, step.Limit)
 				if err != nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
 				} else {
@@ -65,7 +65,7 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 			if len(evidence.Events) == 0 {
 				if t.kube == nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, "Kubernetes service account is unavailable")
-				} else if events, err := t.kube.Events(ctx, incident.Namespace, incident.Service, incident.StartedAt); err != nil {
+				} else if events, err := t.kube.Events(ctx, incident.Namespace, incident.Service, incident.StartedAt, time.Duration(step.LookbackMinutes)*time.Minute, step.Limit); err != nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
 				} else {
 					evidence.Events = events
@@ -81,22 +81,54 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 					evidence.NetworkPolicies = policies
 				}
 			}
-
+		case ToolTraceContext:
+			if len(evidence.Traces) == 0 {
+				if traces, err := t.TraceContext(ctx, incident.Service, incident.StartedAt, step); err != nil {
+					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
+				} else {
+					evidence.Traces = traces
+				}
+			}
+		case ToolRecentChanges:
+			if len(evidence.RecentChanges) == 0 {
+				if t.kube == nil {
+					evidence.CollectionErrs = append(evidence.CollectionErrs, "Kubernetes service account is unavailable")
+				} else if changes, err := t.kube.RecentChanges(ctx, incident.Namespace, incident.Service, incident.StartedAt, time.Duration(step.LookbackMinutes)*time.Minute, step.Limit); err != nil {
+					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
+				} else {
+					evidence.RecentChanges = changes
+				}
+			}
+		case ToolNodeStatus:
+			if evidence.NodeStatus == nil {
+				if t.kube == nil {
+					evidence.CollectionErrs = append(evidence.CollectionErrs, "Kubernetes service account is unavailable")
+				} else if status, err := t.kube.NodeStatus(ctx, incident.Service); err != nil {
+					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
+				} else {
+					evidence.NodeStatus = &status
+				}
+			}
 		}
 	}
 	return evidence
 }
 
-func (t *Telemetry) ServiceMetrics(ctx context.Context, service string) (MetricSnapshot, error) {
+func (t *Telemetry) ServiceMetrics(ctx context.Context, service string, names []string) (MetricSnapshot, error) {
 	namespace := strconv.Quote(t.cfg.Namespace)
 	serviceLabel := strconv.Quote(service)
 	pod := strconv.Quote(regexp.QuoteMeta(service) + "-.*")
-	queries := map[string]string{
+	allQueries := map[string]string{
 		"cpu":      fmt.Sprintf(`100 * sum(rate(container_cpu_usage_seconds_total{namespace=%s,pod=~%s,container!="",container!="POD"}[2m])) / clamp_min(sum(kube_pod_container_resource_limits{namespace=%s,pod=~%s,resource="cpu",unit="core"}), 0.001)`, namespace, pod, namespace, pod),
 		"memory":   fmt.Sprintf(`sum(container_memory_working_set_bytes{namespace=%s,pod=~%s,container!="",container!="POD"}) / 1024 / 1024`, namespace, pod),
 		"errors":   fmt.Sprintf(`100 * sum(rate(nexus_http_requests_total{namespace=%s,service=%s,status=~"5.."}[5m])) / clamp_min(sum(rate(nexus_http_requests_total{namespace=%s,service=%s}[5m])), 0.001)`, namespace, serviceLabel, namespace, serviceLabel),
 		"latency":  fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (rate(nexus_http_request_duration_seconds_bucket{namespace=%s,service=%s}[5m]))) * 1000`, namespace, serviceLabel),
 		"restarts": fmt.Sprintf(`sum(increase(kube_pod_container_status_restarts_total{namespace=%s,pod=~%s}[15m]))`, namespace, pod),
+	}
+	queries := make(map[string]string, len(names))
+	for _, name := range names {
+		key := map[string]string{MetricCPU: "cpu", MetricMemory: "memory", MetricErrorRate: "errors", MetricP99: "latency", MetricRestarts: "restarts"}[name]
+		queries[key] = allQueries[key]
 	}
 
 	type result struct {
@@ -171,12 +203,23 @@ func (t *Telemetry) prometheusQuery(ctx context.Context, query string) (*float64
 }
 
 func (t *Telemetry) ErrorLogs(ctx context.Context, service string, lookback time.Duration) ([]LogSample, error) {
-	query := fmt.Sprintf(`{namespace=%q,container=%q} |~ "(?i)(error|exception|traceback|panic|fatal|timeout)"`, t.cfg.Namespace, service)
+	return t.filteredErrorLogs(ctx, service, lookback, nil, t.cfg.MaxLogSamples)
+}
+
+func (t *Telemetry) filteredErrorLogs(ctx context.Context, service string, lookback time.Duration, terms []string, limit int) ([]LogSample, error) {
+	if len(terms) == 0 {
+		terms = []string{"error", "exception", "traceback", "panic", "fatal", "timeout"}
+	}
+	escaped := make([]string, len(terms))
+	for i, term := range terms {
+		escaped[i] = regexp.QuoteMeta(term)
+	}
+	query := fmt.Sprintf(`{namespace=%q,container=%q} |~ "(?i)(%s)"`, t.cfg.Namespace, service, strings.Join(escaped, "|"))
 	params := url.Values{
 		"query":     []string{query},
 		"start":     []string{strconv.FormatInt(time.Now().Add(-lookback).UnixNano(), 10)},
 		"end":       []string{strconv.FormatInt(time.Now().UnixNano(), 10)},
-		"limit":     []string{strconv.Itoa(t.cfg.MaxLogSamples)},
+		"limit":     []string{strconv.Itoa(limit)},
 		"direction": []string{"backward"},
 	}
 	var response struct {
@@ -191,10 +234,10 @@ func (t *Telemetry) ErrorLogs(ctx context.Context, service string, lookback time
 	if err := t.getJSON(ctx, t.cfg.LokiURL+"/loki/api/v1/query_range?"+params.Encode(), &response); err != nil {
 		return nil, fmt.Errorf("Loki query failed: %w", err)
 	}
-	logs := make([]LogSample, 0, t.cfg.MaxLogSamples)
+	logs := make([]LogSample, 0, limit)
 	for _, stream := range response.Data.Result {
 		for _, value := range stream.Values {
-			if len(value) < 2 || len(logs) >= t.cfg.MaxLogSamples {
+			if len(value) < 2 || len(logs) >= limit {
 				continue
 			}
 			ns, _ := strconv.ParseInt(value[0], 10, 64)
@@ -423,7 +466,7 @@ func (e kubeEvent) timestamp() time.Time {
 	return e.Metadata.CreationTimestamp
 }
 
-func (k *KubeClient) Events(ctx context.Context, namespace, service string, startedAt time.Time) ([]KubernetesEvent, error) {
+func (k *KubeClient) Events(ctx context.Context, namespace, service string, startedAt time.Time, lookback time.Duration, limit int) ([]KubernetesEvent, error) {
 	var response struct {
 		Items []kubeEvent `json:"items"`
 	}
@@ -434,14 +477,18 @@ func (k *KubeClient) Events(ctx context.Context, namespace, service string, star
 	sort.Slice(response.Items, func(i, j int) bool {
 		return response.Items[i].timestamp().After(response.Items[j].timestamp())
 	})
-	cutoff := startedAt.Add(-2 * time.Minute)
-	events := make([]KubernetesEvent, 0, 10)
+	anchor := startedAt
+	if anchor.IsZero() {
+		anchor = time.Now()
+	}
+	cutoff := anchor.Add(-lookback)
+	events := make([]KubernetesEvent, 0, limit)
 	for _, event := range response.Items {
 		if len(events) == cap(events) {
 			break
 		}
 		timestamp := event.timestamp()
-		if (!startedAt.IsZero() && timestamp.Before(cutoff)) || (event.Involved.Name != service && !strings.HasPrefix(event.Involved.Name, service+"-")) {
+		if timestamp.Before(cutoff) || (event.Involved.Name != service && !strings.HasPrefix(event.Involved.Name, service+"-")) {
 			continue
 		}
 		events = append(events, KubernetesEvent{Timestamp: timestamp, Type: event.Type, Reason: event.Reason, Object: event.Involved.Name, Message: redact(event.Message, 500)})
@@ -485,4 +532,125 @@ func redact(value string, limit int) string {
 		return value[:limit] + "..."
 	}
 	return value
+}
+
+func (t *Telemetry) TraceContext(ctx context.Context, service string, startedAt time.Time, step CollectionStep) ([]TraceEvidence, error) {
+	anchor := startedAt
+	if anchor.IsZero() {
+		anchor = time.Now()
+	}
+	query := fmt.Sprintf(`{ resource.service.name = %q`, service)
+	switch step.TraceStatus {
+	case TraceStatusError:
+		query += ` && status = error`
+	case TraceStatusSlow:
+		query += fmt.Sprintf(` && duration > %dms`, step.MinDurationMS)
+	}
+	query += ` }`
+	params := url.Values{
+		"q":     []string{query},
+		"start": []string{strconv.FormatInt(anchor.Add(-time.Duration(step.LookbackMinutes)*time.Minute).Unix(), 10)},
+		"end":   []string{strconv.FormatInt(anchor.Add(2*time.Minute).Unix(), 10)},
+		"limit": []string{strconv.Itoa(step.Limit)},
+	}
+	var response struct {
+		Traces []struct {
+			TraceID         string  `json:"traceID"`
+			RootServiceName string  `json:"rootServiceName"`
+			RootTraceName   string  `json:"rootTraceName"`
+			StartTime       string  `json:"startTimeUnixNano"`
+			DurationMS      float64 `json:"durationMs"`
+		} `json:"traces"`
+	}
+	if err := t.getJSON(ctx, t.cfg.TempoURL+"/api/search?"+params.Encode(), &response); err != nil {
+		return nil, fmt.Errorf("Tempo query failed: %w", err)
+	}
+	traces := make([]TraceEvidence, 0, len(response.Traces))
+	for _, item := range response.Traces {
+		started := time.Time{}
+		if ns, err := strconv.ParseInt(item.StartTime, 10, 64); err == nil {
+			started = time.Unix(0, ns).UTC()
+		}
+		traces = append(traces, TraceEvidence{TraceID: item.TraceID, RootService: item.RootServiceName, RootName: redact(item.RootTraceName, 200), StartedAt: started, DurationMS: item.DurationMS})
+	}
+	return traces, nil
+}
+
+func (k *KubeClient) RecentChanges(ctx context.Context, namespace, service string, startedAt time.Time, lookback time.Duration, limit int) ([]DeploymentChange, error) {
+	var response struct {
+		Items []struct {
+			Metadata struct {
+				Name              string            `json:"name"`
+				CreationTimestamp time.Time         `json:"creationTimestamp"`
+				Annotations       map[string]string `json:"annotations"`
+			} `json:"metadata"`
+			Spec struct {
+				Replicas *int32 `json:"replicas"`
+				Template struct {
+					Spec struct {
+						Containers []struct {
+							Image string `json:"image"`
+						} `json:"containers"`
+					} `json:"spec"`
+				} `json:"template"`
+			} `json:"spec"`
+			Status struct {
+				ReadyReplicas int32 `json:"readyReplicas"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	path := "/apis/apps/v1/namespaces/" + url.PathEscape(namespace) + "/replicasets?labelSelector=" + url.QueryEscape("app.kubernetes.io/name="+service)
+	if err := k.get(ctx, path, &response); err != nil {
+		return nil, err
+	}
+	anchor := startedAt
+	if anchor.IsZero() {
+		anchor = time.Now()
+	}
+	cutoff := anchor.Add(-lookback)
+	sort.Slice(response.Items, func(i, j int) bool {
+		return response.Items[i].Metadata.CreationTimestamp.After(response.Items[j].Metadata.CreationTimestamp)
+	})
+	changes := make([]DeploymentChange, 0, limit)
+	for _, item := range response.Items {
+		if len(changes) >= limit || item.Metadata.CreationTimestamp.Before(cutoff) || item.Metadata.CreationTimestamp.After(anchor.Add(2*time.Minute)) {
+			continue
+		}
+		change := DeploymentChange{ReplicaSet: item.Metadata.Name, Revision: item.Metadata.Annotations["deployment.kubernetes.io/revision"], CreatedAt: item.Metadata.CreationTimestamp, Ready: item.Status.ReadyReplicas}
+		if item.Spec.Replicas != nil {
+			change.Replicas = *item.Spec.Replicas
+		}
+		for _, container := range item.Spec.Template.Spec.Containers {
+			change.Images = append(change.Images, container.Image)
+		}
+		changes = append(changes, change)
+	}
+	return changes, nil
+}
+
+func (k *KubeClient) NodeStatus(ctx context.Context, name string) (NodeStatusEvidence, error) {
+	var node struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Spec struct {
+			Taints []struct{ Key, Value, Effect string } `json:"taints"`
+		} `json:"spec"`
+		Status struct {
+			Conditions  []struct{ Type, Status, Reason string } `json:"conditions"`
+			Capacity    map[string]string                       `json:"capacity"`
+			Allocatable map[string]string                       `json:"allocatable"`
+		} `json:"status"`
+	}
+	if err := k.get(ctx, "/api/v1/nodes/"+url.PathEscape(name), &node); err != nil {
+		return NodeStatusEvidence{}, err
+	}
+	result := NodeStatusEvidence{Name: node.Metadata.Name, Conditions: make(map[string]string), Capacity: node.Status.Capacity, Allocatable: node.Status.Allocatable}
+	for _, condition := range node.Status.Conditions {
+		result.Conditions[condition.Type] = condition.Status + ": " + condition.Reason
+	}
+	for _, taint := range node.Spec.Taints {
+		result.Taints = append(result.Taints, taint.Key+"="+taint.Value+":"+taint.Effect)
+	}
+	return result, nil
 }

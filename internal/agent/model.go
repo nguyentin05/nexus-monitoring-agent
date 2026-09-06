@@ -8,6 +8,12 @@ const (
 	ToolWorkloadStatus   = "workload_status"
 	ToolKubernetesEvents = "kubernetes_events"
 	ToolNetworkPolicies  = "network_policies"
+	ToolTraceContext     = "trace_context"
+	ToolRecentChanges    = "recent_changes"
+	ToolNodeStatus       = "node_status"
+
+	TargetIncidentService = "incident.service"
+	TargetIncidentNode    = "incident.node"
 )
 
 var allowedTools = map[string]struct{}{
@@ -16,6 +22,9 @@ var allowedTools = map[string]struct{}{
 	ToolWorkloadStatus:   {},
 	ToolKubernetesEvents: {},
 	ToolNetworkPolicies:  {},
+	ToolTraceContext:     {},
+	ToolRecentChanges:    {},
+	ToolNodeStatus:       {},
 }
 
 type Incident struct {
@@ -82,18 +91,57 @@ type NetworkPolicyEvidence struct {
 	AllowedPorts    []string          `json:"allowed_ports,omitempty"`
 }
 
+type TraceEvidence struct {
+	TraceID     string    `json:"trace_id"`
+	RootService string    `json:"root_service,omitempty"`
+	RootName    string    `json:"root_name,omitempty"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	DurationMS  float64   `json:"duration_ms"`
+}
+
+type DeploymentChange struct {
+	ReplicaSet string    `json:"replica_set"`
+	Revision   string    `json:"revision,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	Images     []string  `json:"images,omitempty"`
+	Replicas   int32     `json:"replicas"`
+	Ready      int32     `json:"ready"`
+}
+
+type NodeStatusEvidence struct {
+	Name        string            `json:"name"`
+	Conditions  map[string]string `json:"conditions,omitempty"`
+	Capacity    map[string]string `json:"capacity,omitempty"`
+	Allocatable map[string]string `json:"allocatable,omitempty"`
+	Taints      []string          `json:"taints,omitempty"`
+}
+
 type Evidence struct {
 	Metrics         *MetricSnapshot         `json:"metrics,omitempty"`
 	Logs            []LogSample             `json:"logs,omitempty"`
 	Workload        *WorkloadStatus         `json:"workload,omitempty"`
 	Events          []KubernetesEvent       `json:"kubernetes_events,omitempty"`
 	NetworkPolicies []NetworkPolicyEvidence `json:"network_policies,omitempty"`
+	Traces          []TraceEvidence         `json:"traces,omitempty"`
+	RecentChanges   []DeploymentChange      `json:"recent_changes,omitempty"`
+	NodeStatus      *NodeStatusEvidence     `json:"node_status,omitempty"`
 	CollectionErrs  []string                `json:"collection_errors,omitempty"`
 }
 
+type CollectionStep struct {
+	Tool            string   `json:"tool"`
+	Target          string   `json:"target,omitempty"`
+	LookbackMinutes int      `json:"lookback_minutes,omitempty"`
+	Limit           int      `json:"limit,omitempty"`
+	Metrics         []string `json:"metrics,omitempty"`
+	LogTerms        []string `json:"log_terms,omitempty"`
+	TraceStatus     string   `json:"trace_status,omitempty"`
+	MinDurationMS   int64    `json:"min_duration_ms,omitempty"`
+}
+
 type CollectionPlan struct {
-	Tools  []string `json:"tools"`
-	Reason string   `json:"reason,omitempty"`
+	Steps  []CollectionStep `json:"steps"`
+	Reason string           `json:"reason,omitempty"`
 }
 
 type RCAResult struct {

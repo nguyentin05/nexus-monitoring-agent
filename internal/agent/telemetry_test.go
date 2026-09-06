@@ -44,7 +44,7 @@ func TestEventsDropsStaleEvidenceAndSortsNewestFirst(t *testing.T) {
 	defer server.Close()
 
 	client := &KubeClient{baseURL: server.URL, httpClient: server.Client()}
-	events, err := client.Events(context.Background(), "apps", "service", time.Date(2026, 9, 5, 10, 1, 30, 0, time.UTC))
+	events, err := client.Events(context.Background(), "apps", "service", time.Date(2026, 9, 5, 10, 1, 30, 0, time.UTC), 2*time.Minute, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,5 +95,30 @@ func TestNetworkPoliciesSummarizesPoliciesSelectingService(t *testing.T) {
 	}
 	if len(policies) != 1 || policies[0].Name != "deny-service-egress" || len(policies[0].AllowedPorts) != 2 || policies[0].AllowedPorts[0] != "UDP/53" {
 		t.Fatalf("unexpected policies: %+v", policies)
+	}
+}
+
+func TestTraceAndDeploymentContextAreBounded(t *testing.T) {
+	anchor := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/search":
+			_, _ = w.Write([]byte(`{"traces":[{"traceID":"abc","rootServiceName":"service","rootTraceName":"GET /users","startTimeUnixNano":"1788602400000000000","durationMs":750}]}`))
+		case "/apis/apps/v1/namespaces/apps/replicasets":
+			_, _ = w.Write([]byte(`{"items":[{"metadata":{"name":"service-new","creationTimestamp":"2026-09-05T09:55:00Z","annotations":{"deployment.kubernetes.io/revision":"2"}},"spec":{"replicas":1,"template":{"spec":{"containers":[{"image":"repo/service:v2"}]}}},"status":{"readyReplicas":1}},{"metadata":{"name":"service-future","creationTimestamp":"2026-09-05T10:10:00Z"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	telemetry := &Telemetry{cfg: Config{TempoURL: server.URL}, httpClient: server.Client()}
+	traces, err := telemetry.TraceContext(context.Background(), "service", anchor, CollectionStep{LookbackMinutes: 10, Limit: 1, TraceStatus: TraceStatusSlow, MinDurationMS: 500})
+	if err != nil || len(traces) != 1 || traces[0].TraceID != "abc" {
+		t.Fatalf("traces=%+v err=%v", traces, err)
+	}
+	client := &KubeClient{baseURL: server.URL, httpClient: server.Client()}
+	changes, err := client.RecentChanges(context.Background(), "apps", "service", anchor, 10*time.Minute, 5)
+	if err != nil || len(changes) != 1 || changes[0].Revision != "2" {
+		t.Fatalf("changes=%+v err=%v", changes, err)
 	}
 }
