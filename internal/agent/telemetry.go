@@ -51,7 +51,7 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 			if hasLogScope(evidence.Logs, namespace, container) {
 				continue
 			}
-			logs, err := t.filteredErrorLogs(ctx, namespace, container, time.Duration(step.LookbackMinutes)*time.Minute, step.LogTerms, step.Limit)
+			logs, err := t.filteredErrorLogs(ctx, namespace, container, incident.StartedAt, incident.CorrelationKey, time.Duration(step.LookbackMinutes)*time.Minute, step.LogTerms, step.Limit)
 			if err != nil {
 				evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
 			} else {
@@ -220,10 +220,10 @@ func (t *Telemetry) prometheusQuery(ctx context.Context, query string) (*float64
 }
 
 func (t *Telemetry) ErrorLogs(ctx context.Context, service string, lookback time.Duration) ([]LogSample, error) {
-	return t.filteredErrorLogs(ctx, t.cfg.Namespace, service, lookback, nil, t.cfg.MaxLogSamples)
+	return t.filteredErrorLogs(ctx, t.cfg.Namespace, service, time.Time{}, "", lookback, nil, t.cfg.MaxLogSamples)
 }
 
-func (t *Telemetry) filteredErrorLogs(ctx context.Context, namespace, container string, lookback time.Duration, terms []string, limit int) ([]LogSample, error) {
+func (t *Telemetry) filteredErrorLogs(ctx context.Context, namespace, container string, anchor time.Time, correlation string, lookback time.Duration, terms []string, limit int) ([]LogSample, error) {
 	if len(terms) == 0 {
 		terms = []string{"error", "exception", "traceback", "panic", "fatal", "timeout"}
 	}
@@ -231,11 +231,21 @@ func (t *Telemetry) filteredErrorLogs(ctx context.Context, namespace, container 
 	for i, term := range terms {
 		escaped[i] = regexp.QuoteMeta(term)
 	}
-	query := fmt.Sprintf(`{namespace=%q,container=%q} |~ "(?i)(%s)"`, namespace, container, strings.Join(escaped, "|"))
+	query := fmt.Sprintf(`{namespace=%q,container=%q}`, namespace, container)
+	if correlation != "" {
+		query += fmt.Sprintf(` |= %q`, correlation)
+	} else {
+		query += fmt.Sprintf(` |~ "(?i)(%s)"`, strings.Join(escaped, "|"))
+	}
+	now := time.Now()
+	end := now
+	if !anchor.IsZero() && anchor.Add(2*time.Minute).Before(end) {
+		end = anchor.Add(2 * time.Minute)
+	}
 	params := url.Values{
 		"query":     []string{query},
-		"start":     []string{strconv.FormatInt(time.Now().Add(-lookback).UnixNano(), 10)},
-		"end":       []string{strconv.FormatInt(time.Now().UnixNano(), 10)},
+		"start":     []string{strconv.FormatInt(end.Add(-lookback).UnixNano(), 10)},
+		"end":       []string{strconv.FormatInt(end.UnixNano(), 10)},
 		"limit":     []string{strconv.Itoa(limit)},
 		"direction": []string{"backward"},
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,5 +146,26 @@ func TestRelatedNodePrefersUnhealthyPod(t *testing.T) {
 	node, err := client.RelatedNode(context.Background(), "apps", "service")
 	if err != nil || node != "node-b" {
 		t.Fatalf("node=%q err=%v", node, err)
+	}
+}
+
+func TestFilteredErrorLogsUsesIncidentCorrelationAndAnchor(t *testing.T) {
+	anchor := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if got := query.Get("query"); !strings.Contains(got, `|= "run-123"`) || strings.Contains(got, "|~") {
+			t.Errorf("unexpected LogQL: %s", got)
+		}
+		wantEnd := anchor.Add(2 * time.Minute).UnixNano()
+		if got, _ := strconv.ParseInt(query.Get("end"), 10, 64); got != wantEnd {
+			t.Errorf("end=%d want=%d", got, wantEnd)
+		}
+		_, _ = w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+	}))
+	defer server.Close()
+
+	telemetry := &Telemetry{cfg: Config{LokiURL: server.URL}, httpClient: server.Client()}
+	if _, err := telemetry.filteredErrorLogs(context.Background(), "apps", "service", anchor, "run-123", 5*time.Minute, nil, 10); err != nil {
+		t.Fatal(err)
 	}
 }

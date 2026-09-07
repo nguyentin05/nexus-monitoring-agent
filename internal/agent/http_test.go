@@ -16,7 +16,7 @@ func TestAlertsRequireAuthenticatedAlertmanager(t *testing.T) {
 		return token == "valid-token", nil
 	}
 	handler := server.Handler()
-	payload := `{"status":"firing","alerts":[{"status":"firing","labels":{"alertname":"NexusServiceHigh5xxRate","service":"auth-service"}}]}`
+	payload := `{"status":"firing","alerts":[{"status":"firing","labels":{"alertname":"NexusServiceHigh5xxRate","service":"auth-service","run_id":"run-123"}}]}`
 
 	request := httptest.NewRequest(http.MethodPost, "/alerts", strings.NewReader(payload))
 	response := httptest.NewRecorder()
@@ -31,6 +31,14 @@ func TestAlertsRequireAuthenticatedAlertmanager(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted || processor.Stats.Received.Load() != 1 {
 		t.Fatalf("authenticated status=%d received=%d", response.Code, processor.Stats.Received.Load())
+	}
+	select {
+	case incident := <-processor.queue:
+		if incident.CorrelationKey != "run-123" {
+			t.Fatalf("correlation key=%q", incident.CorrelationKey)
+		}
+	default:
+		t.Fatal("alert was not submitted")
 	}
 }
 
