@@ -224,7 +224,7 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 		slog.Warn("RCA confidence downgraded", "incident", incident.Key(), "root_cause", result.RootCause)
 		result.Confidence = "low"
 	}
-	valid := complete && grounded
+	valid := complete && grounded && result.Confidence != "low"
 	if adaptive && complete {
 		if p.adaptive.RecordValidation(incident, valid) {
 			p.Stats.AdaptiveDemoted.Add(1)
@@ -257,7 +257,7 @@ func summarizeEvidence(evidence Evidence) map[string]any {
 }
 
 func groundedRCA(result RCAResult, evidence Evidence) bool {
-	if result.Confidence == "low" || len(result.Evidence) == 0 {
+	if len(result.Evidence) == 0 {
 		return false
 	}
 	rootCause := strings.ToLower(result.RootCause)

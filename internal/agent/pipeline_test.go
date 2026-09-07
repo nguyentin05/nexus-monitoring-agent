@@ -136,6 +136,18 @@ func TestUngroundedRCAIsNotCached(t *testing.T) {
 	}
 }
 
+func TestLowConfidenceRCAIsGroundedButNotCached(t *testing.T) {
+	llm := &fakeLLM{result: &RCAResult{RootCause: "request delay caused latency", Confidence: "low", Evidence: []string{"test evidence"}, SuggestedActions: []string{"inspect"}}}
+	processor := NewProcessor(Config{QueueSize: 1, RCACacheTTL: time.Hour}, &fakeCollector{}, llm, fakeNotifier{})
+	incident := Incident{Kind: "unknown_signal", Service: "auth-service", StartedAt: time.Now()}
+
+	first := processor.Process(context.Background(), incident)
+	second := processor.Process(context.Background(), incident)
+	if !first.Grounded || !second.Grounded || llm.analyses != 2 {
+		t.Fatalf("first=%+v second=%+v analyses=%d", first, second, llm.analyses)
+	}
+}
+
 func planHasTarget(plan CollectionPlan, tool, target string) bool {
 	for _, step := range plan.Steps {
 		if step.Tool == tool && step.Target == target {
