@@ -14,13 +14,13 @@ func TestPatternCatalogLearnsNormalizesAndPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now().UTC()
-	training := []LogSample{
+	samples := []LogSample{
 		{Timestamp: start, Message: "database timeout request=101"},
 		{Timestamp: start.Add(time.Second), Message: "database timeout request=202"},
 		{Timestamp: start.Add(2 * time.Second), Message: "database timeout request=303"},
 	}
-	novel, err := catalog.Observe("auth-service", training, true)
-	if err != nil || len(novel) != 0 {
+	novel, err := catalog.Observe("auth-service", samples, true)
+	if err != nil || len(novel) != 1 {
 		t.Fatalf("novel=%d err=%v", len(novel), err)
 	}
 	if len(catalog.Patterns) != 1 {

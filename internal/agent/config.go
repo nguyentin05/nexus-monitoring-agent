@@ -106,8 +106,8 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
-	if cfg.Mode != "training" && cfg.Mode != "shadow" && cfg.Mode != "detect" {
-		return Config{}, fmt.Errorf("AGENT_MODE must be training, shadow or detect")
+	if cfg.Mode != "shadow" && cfg.Mode != "detect" {
+		return Config{}, fmt.Errorf("AGENT_MODE must be shadow or detect")
 	}
 	if cfg.Address == "" || cfg.PrometheusURL == "" || cfg.LokiURL == "" || cfg.TempoURL == "" || cfg.AWSRegion == "" || cfg.BedrockModelID == "" || cfg.Namespace == "" || cfg.AlertmanagerUsername == "" {
 		return Config{}, fmt.Errorf("ADDRESS, PROMETHEUS_URL, LOKI_URL, TEMPO_URL, AWS_REGION, BEDROCK_MODEL_ID, TARGET_NAMESPACE and ALERTMANAGER_USERNAME must not be empty")

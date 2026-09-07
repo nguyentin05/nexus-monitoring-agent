@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestNormalizeCollectionPlanIsStableAndRejectsUnsafeInput(t *testing.T) {
 	left, err := normalizeCollectionPlan(CollectionPlan{Steps: []CollectionStep{{Tool: ToolErrorLogs, LogTerms: []string{"timeout", "error"}}, {Tool: ToolServiceMetrics, Metrics: []string{MetricCPU}}}})
@@ -19,5 +22,13 @@ func TestNormalizeCollectionPlanIsStableAndRejectsUnsafeInput(t *testing.T) {
 	}
 	if _, err := normalizeCollectionPlan(CollectionPlan{Steps: []CollectionStep{{Tool: ToolTraceContext, Limit: 6}}}); err == nil {
 		t.Fatal("unsafe trace limit accepted")
+	}
+}
+
+func TestMergeContractKeepsRequiredQueryForSameScope(t *testing.T) {
+	contract := contractForIncident(Incident{Description: "database connection refused"})
+	merged := mergeContract(CollectionPlan{Steps: []CollectionStep{{Tool: ToolErrorLogs}}}, contract)
+	if len(merged.Steps) != 1 || !slices.Contains(merged.Steps[0].LogTerms, "refused") {
+		t.Fatalf("required query was replaced: %+v", merged.Steps)
 	}
 }

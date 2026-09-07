@@ -137,7 +137,7 @@ func (p *Processor) Run(ctx context.Context) {
 			if outcome.RCA != nil {
 				rootCause, confidence = outcome.RCA.RootCause, outcome.RCA.Confidence
 			}
-			slog.Info("incident processed", "incident", incident.Key(), "description", incident.Description, "mode", p.cfg.Mode, "path", outcome.Path, "fallback", outcome.Fallback, "root_cause", rootCause, "confidence", confidence)
+			slog.Info("incident processed", "incident", incident.Key(), "description", incident.Description, "mode", p.cfg.Mode, "path", outcome.Path, "fallback", outcome.Fallback, "grounded", outcome.Grounded, "evidence_complete", outcome.EvidenceComplete, "root_cause", rootCause, "confidence", confidence)
 			if p.cfg.Mode != "detect" {
 				p.Stats.Suppressed.Add(1)
 				continue
@@ -153,19 +153,15 @@ func (p *Processor) Run(ctx context.Context) {
 
 func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 	p.Stats.Processed.Add(1)
-	if p.cfg.Mode == "training" {
-		result := deterministicRCA(incident, "training mode")
-		return Outcome{Incident: incident, Path: "training", RCA: &result}
-	}
 
 	if result, ok := exactPattern(incident); ok {
 		p.Stats.ExactPattern.Add(1)
-		return Outcome{Incident: incident, Path: "exact_pattern", RCA: &result}
+		return Outcome{Incident: incident, Path: "exact_pattern", RCA: &result, Grounded: true, EvidenceComplete: true}
 	}
 	cacheKey := incidentCacheKey(incident)
 	if cached, ok := p.cachedRCA(cacheKey); ok {
 		p.Stats.RCACacheHits.Add(1)
-		return Outcome{Incident: incident, Path: cached.Path, RCA: &cached.Result}
+		return Outcome{Incident: incident, Path: cached.Path, RCA: &cached.Result, Grounded: true, EvidenceComplete: true}
 	}
 
 	path := "known_plan"
@@ -196,11 +192,13 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 		}
 	}
 
-	if strings.Contains(strings.ToLower(incident.Description), "policy change") && !planHasTool(plan, ToolNetworkPolicies) {
-		plan.Steps = append(plan.Steps, CollectionStep{Tool: ToolNetworkPolicies, Target: TargetIncidentService})
-	}
-
+	contract := contractForIncident(incident)
+	plan = mergeContract(plan, contract)
 	incident.Evidence = p.collector.Collect(ctx, incident, plan)
+	incident.Evidence.EvidenceGaps = contract.gaps(incident.Evidence)
+	complete := len(incident.Evidence.CollectionErrs) == 0 && len(incident.Evidence.EvidenceGaps) == 0
+	slog.Info("incident evidence collected", "incident", incident.Key(), "family", contract.Family, "steps", plan.Steps, "summary", summarizeEvidence(incident.Evidence), "complete", complete)
+
 	if !p.budget.Allow(time.Now()) {
 		p.Stats.BudgetLimited.Add(1)
 		return p.fallback(incident, path, plannerErr, fmt.Errorf("LLM hourly call budget exhausted"))
@@ -212,20 +210,73 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 	if err != nil {
 		return p.fallback(incident, path, plannerErr, err)
 	}
-	if adaptive && len(incident.Evidence.CollectionErrs) == 0 {
-		if p.adaptive.RecordValidation(incident, result.Confidence != "low") {
+	grounded := groundedRCA(result, incident.Evidence)
+	if !grounded && result.Confidence != "low" {
+		slog.Warn("RCA confidence downgraded", "incident", incident.Key(), "root_cause", result.RootCause)
+		result.Confidence = "low"
+	}
+	valid := complete && grounded
+	if adaptive && complete {
+		if p.adaptive.RecordValidation(incident, valid) {
 			p.Stats.AdaptiveDemoted.Add(1)
 		}
-	} else if path == "llm_planner" && plannerErr == nil && result.Confidence != "low" && len(incident.Evidence.CollectionErrs) == 0 {
+	} else if path == "llm_planner" && plannerErr == nil && valid {
 		if p.adaptive.Observe(incident, plan) {
 			p.Stats.AdaptivePromoted.Add(1)
 			slog.Info("adaptive collection plan promoted", "kind", incident.Kind, "alert", incident.AlertName, "steps", plan.Steps)
 		}
 	}
-	if result.Confidence != "low" && len(incident.Evidence.CollectionErrs) == 0 {
+	if valid {
 		p.cacheRCA(cacheKey, path, result)
 	}
-	return Outcome{Incident: incident, Path: path, RCA: &result}
+	return Outcome{Incident: incident, Path: path, RCA: &result, Grounded: grounded, EvidenceComplete: complete}
+}
+
+func summarizeEvidence(evidence Evidence) map[string]any {
+	return map[string]any{
+		"metrics":           evidence.Metrics != nil,
+		"logs":              len(evidence.Logs),
+		"workload":          evidence.Workload != nil,
+		"events":            len(evidence.Events),
+		"network_policies":  len(evidence.NetworkPolicies),
+		"traces":            len(evidence.Traces),
+		"recent_changes":    len(evidence.RecentChanges),
+		"node_status":       evidence.NodeStatus != nil,
+		"collection_errors": len(evidence.CollectionErrs),
+		"evidence_gaps":     evidence.EvidenceGaps,
+	}
+}
+
+func groundedRCA(result RCAResult, evidence Evidence) bool {
+	if result.Confidence == "low" || len(result.Evidence) == 0 {
+		return false
+	}
+	rootCause := strings.ToLower(result.RootCause)
+	if containsAny(rootCause, "no root cause", "no clear root", "no evidence", "insufficient evidence", "unable to determine", "cannot determine") {
+		return false
+	}
+	raw, _ := json.Marshal(Evidence{
+		Metrics: evidence.Metrics, Logs: evidence.Logs, Workload: evidence.Workload,
+		Events: evidence.Events, NetworkPolicies: evidence.NetworkPolicies,
+		Traces: evidence.Traces, RecentChanges: evidence.RecentChanges, NodeStatus: evidence.NodeStatus,
+	})
+	source := strings.ToLower(string(raw))
+	stopWords := map[string]struct{}{
+		"and": {}, "from": {}, "that": {}, "the": {}, "this": {}, "was": {}, "were": {}, "with": {},
+	}
+	for _, citation := range result.Evidence {
+		for _, token := range strings.FieldsFunc(strings.ToLower(citation), func(r rune) bool {
+			return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+		}) {
+			if len(token) < 3 {
+				continue
+			}
+			if _, skip := stopWords[token]; !skip && strings.Contains(source, token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Processor) fallback(incident Incident, path string, plannerErr, rcaErr error) Outcome {

@@ -26,6 +26,25 @@ const (
 	maxCollectionLimit = 20
 )
 
+const (
+	familyApplication  = "application"
+	familyCompute      = "compute"
+	familyDependency   = "dependency"
+	familyDeployment   = "deployment"
+	familyGeneric      = "generic"
+	familyLatency      = "latency"
+	familyNetwork      = "network"
+	familyNode         = "node"
+	familyPodLifecycle = "pod_lifecycle"
+	familySecrets      = "secrets"
+	familyStorage      = "storage"
+)
+
+type evidenceContract struct {
+	Family   string
+	Required []CollectionStep
+}
+
 var allowedMetrics = map[string]struct{}{
 	MetricCPU: {}, MetricMemory: {}, MetricErrorRate: {}, MetricP99: {}, MetricRestarts: {},
 }
@@ -78,14 +97,19 @@ func normalizeCollectionStep(step CollectionStep) (CollectionStep, error) {
 			target = TargetIncidentNode
 		}
 	}
-	if step.Tool == ToolNodeStatus {
-		if target != TargetIncidentNode {
-			return CollectionStep{}, fmt.Errorf("tool %s requires target %s", step.Tool, TargetIncidentNode)
+	allowedTargets := map[string]map[string]struct{}{
+		ToolErrorLogs:        {TargetIncidentService: {}, TargetRelatedOperator: {}},
+		ToolWorkloadStatus:   {TargetIncidentService: {}, TargetIncidentPods: {}},
+		ToolKubernetesEvents: {TargetIncidentService: {}, TargetIncidentPods: {}},
+		ToolNodeStatus:       {TargetIncidentNode: {}, TargetRelatedNode: {}},
+	}
+	if targets, restricted := allowedTargets[step.Tool]; restricted {
+		if _, ok := targets[target]; !ok {
+			return CollectionStep{}, fmt.Errorf("tool %s does not support target %s", step.Tool, target)
 		}
 	} else if target != TargetIncidentService {
 		return CollectionStep{}, fmt.Errorf("tool %s requires target %s", step.Tool, TargetIncidentService)
 	}
-
 	next := CollectionStep{Tool: step.Tool, Target: target}
 	switch step.Tool {
 	case ToolServiceMetrics:
@@ -218,4 +242,183 @@ func cloneCollectionPlan(plan CollectionPlan) CollectionPlan {
 		clone.Steps[index].LogTerms = slices.Clone(step.LogTerms)
 	}
 	return clone
+}
+
+func incidentFamily(incident Incident) string {
+	text := strings.ToLower(strings.Join([]string{incident.Kind, incident.AlertName, incident.Description}, " "))
+	switch {
+	case containsAny(text, "vault", "external secret", "secret reconciliation", "required credentials"):
+		return familySecrets
+	case containsAny(text, "networkpolicy", "network policy", "policy change"):
+		return familyNetwork
+	case containsAny(text, "diskpressure", "disk pressure", "ephemeral storage", "ephemeral-storage"):
+		return familyStorage
+	case containsAny(text, "image pull", "before its container starts", "resourcequota", "resource quota", "cannot create", "failedcreate"):
+		return familyDeployment
+	case containsAny(text, "oom", "memory growth", "liveness", "probe", "frequent_restarts", "repeatedly restarts"):
+		return familyPodLifecycle
+	case containsAny(text, "node_cpu", "node_memory"):
+		return familyNode
+	case containsAny(text, "cpu_high", "cpu usage", "cpu saturation"):
+		return familyCompute
+	case containsAny(text, "p99", "latency", "slow response"):
+		return familyLatency
+	case containsAny(text, "5xx", "error_rate_high", "exception_pattern", "novel_log_pattern"):
+		return familyApplication
+	case containsAny(text, "dependency", "database", "persistence", "dns", "certificate", "tls", "upstream"):
+		return familyDependency
+	default:
+		return familyGeneric
+	}
+}
+
+func contractForIncident(incident Incident) evidenceContract {
+	contract := evidenceContract{Family: incidentFamily(incident)}
+	switch contract.Family {
+	case familyApplication:
+		contract.Required = []CollectionStep{
+			{Tool: ToolServiceMetrics, Metrics: []string{MetricErrorRate}},
+			{Tool: ToolErrorLogs},
+		}
+	case familyCompute:
+		contract.Required = []CollectionStep{
+			{Tool: ToolServiceMetrics, Metrics: []string{MetricCPU, MetricMemory}},
+			{Tool: ToolWorkloadStatus, Target: TargetIncidentPods},
+		}
+	case familyLatency:
+		contract.Required = []CollectionStep{
+			{Tool: ToolServiceMetrics, Metrics: []string{MetricCPU, MetricP99}},
+			{Tool: ToolErrorLogs, LogTerms: []string{"latency", "query", "slow", "warning"}},
+		}
+	case familyDependency:
+		contract.Required = []CollectionStep{
+			{Tool: ToolErrorLogs, LogTerms: []string{"certificate", "dns", "error", "refused", "timeout"}},
+		}
+	case familyPodLifecycle:
+		contract.Required = []CollectionStep{
+			{Tool: ToolWorkloadStatus, Target: TargetIncidentPods},
+			{Tool: ToolKubernetesEvents, Target: TargetIncidentPods},
+		}
+	case familyDeployment:
+		contract.Required = []CollectionStep{
+			{Tool: ToolWorkloadStatus, Target: TargetIncidentPods},
+			{Tool: ToolKubernetesEvents, Target: TargetIncidentPods},
+		}
+	case familyStorage:
+		contract.Required = []CollectionStep{
+			{Tool: ToolKubernetesEvents, Target: TargetIncidentPods},
+			{Tool: ToolNodeStatus, Target: TargetRelatedNode},
+		}
+	case familyNetwork:
+		contract.Required = []CollectionStep{
+			{Tool: ToolErrorLogs, LogTerms: []string{"blocked", "deny", "error", "timeout", "unreachable"}},
+			{Tool: ToolNetworkPolicies},
+		}
+	case familySecrets:
+		contract.Required = []CollectionStep{
+			{Tool: ToolKubernetesEvents, Target: TargetIncidentPods},
+			{Tool: ToolErrorLogs, Target: TargetRelatedOperator, LogTerms: []string{"error", "permission", "reconcile", "secret", "vault"}},
+		}
+	case familyNode:
+		contract.Required = []CollectionStep{{Tool: ToolNodeStatus, Target: TargetIncidentNode}}
+	default:
+		contract.Required = []CollectionStep{
+			{Tool: ToolErrorLogs},
+			{Tool: ToolWorkloadStatus, Target: TargetIncidentPods},
+		}
+	}
+	return contract
+}
+
+func mergeContract(plan CollectionPlan, contract evidenceContract) CollectionPlan {
+	steps := append([]CollectionStep(nil), contract.Required...)
+	steps = append(steps, plan.Steps...)
+	merged := CollectionPlan{Reason: plan.Reason}
+	seen := make(map[string]struct{}, maxCollectionSteps)
+	for _, step := range steps {
+		normalized, err := normalizeCollectionStep(step)
+		if err != nil {
+			continue
+		}
+		key := normalized.Tool + "\x00" + normalized.Target
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged.Steps = append(merged.Steps, normalized)
+		if len(merged.Steps) == maxCollectionSteps {
+			break
+		}
+	}
+	sort.Slice(merged.Steps, func(i, j int) bool {
+		return collectionStepKey(merged.Steps[i]) < collectionStepKey(merged.Steps[j])
+	})
+	return merged
+}
+
+func (contract evidenceContract) gaps(evidence Evidence) []string {
+	var gaps []string
+	for _, raw := range contract.Required {
+		step, err := normalizeCollectionStep(raw)
+		if err != nil {
+			continue
+		}
+		if !evidenceAvailable(evidence, step) {
+			gaps = append(gaps, step.Tool+"@"+step.Target)
+		}
+	}
+	return gaps
+}
+
+func evidenceAvailable(evidence Evidence, step CollectionStep) bool {
+	switch step.Tool {
+	case ToolServiceMetrics:
+		if evidence.Metrics == nil {
+			return false
+		}
+		for _, metric := range step.Metrics {
+			value := map[string]*float64{
+				MetricCPU: evidence.Metrics.CPUPercent, MetricMemory: evidence.Metrics.MemoryMB,
+				MetricErrorRate: evidence.Metrics.ErrorRatePercent, MetricP99: evidence.Metrics.P99LatencyMS,
+				MetricRestarts: evidence.Metrics.RestartCount,
+			}[metric]
+			if value == nil {
+				return false
+			}
+		}
+		return true
+	case ToolErrorLogs:
+		if step.Target == TargetRelatedOperator {
+			for _, sample := range evidence.Logs {
+				if sample.Namespace == "external-secrets" && sample.Container == "external-secrets" {
+					return true
+				}
+			}
+			return false
+		}
+		return len(evidence.Logs) > 0
+	case ToolWorkloadStatus:
+		return evidence.Workload != nil
+	case ToolKubernetesEvents:
+		return len(evidence.Events) > 0
+	case ToolNetworkPolicies:
+		return len(evidence.NetworkPolicies) > 0
+	case ToolTraceContext:
+		return len(evidence.Traces) > 0
+	case ToolRecentChanges:
+		return len(evidence.RecentChanges) > 0
+	case ToolNodeStatus:
+		return evidence.NodeStatus != nil
+	default:
+		return false
+	}
+}
+
+func containsAny(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(value, candidate) {
+			return true
+		}
+	}
+	return false
 }

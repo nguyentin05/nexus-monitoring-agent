@@ -43,7 +43,7 @@ func (d *Discovery) RunOnce(ctx context.Context) int {
 		evidence := Evidence{Logs: logs}
 		incidents := make([]Incident, 0, 1)
 		if d.catalog != nil {
-			patterns, err := d.catalog.Observe(service, logs, d.cfg.Mode == "training")
+			patterns, err := d.catalog.Observe(service, logs, d.cfg.Mode == "shadow")
 			if err != nil {
 				slog.Warn("persist pattern catalog", "service", service, "error", err)
 			}

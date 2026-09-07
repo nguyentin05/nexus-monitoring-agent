@@ -27,7 +27,7 @@ func (f *fakeLLM) Analyze(context.Context, Incident) (RCAResult, TokenUsage, err
 	if f.result != nil {
 		return *f.result, TokenUsage{Input: 20, Output: 5}, nil
 	}
-	return RCAResult{RootCause: "test", Confidence: "high", SuggestedActions: []string{"inspect"}}, TokenUsage{Input: 20, Output: 5}, nil
+	return RCAResult{RootCause: "test evidence", Confidence: "high", Evidence: []string{"test evidence"}, SuggestedActions: []string{"inspect"}}, TokenUsage{Input: 20, Output: 5}, nil
 }
 
 type fakeCollector struct {
@@ -38,7 +38,35 @@ type fakeCollector struct {
 func (f *fakeCollector) Collect(_ context.Context, incident Incident, plan CollectionPlan) Evidence {
 	f.calls++
 	f.plan = plan
-	return incident.Evidence
+	evidence := incident.Evidence
+	for _, step := range plan.Steps {
+		switch step.Tool {
+		case ToolServiceMetrics:
+			value := 1.0
+			evidence.Metrics = &MetricSnapshot{CPUPercent: &value, MemoryMB: &value, ErrorRatePercent: &value, P99LatencyMS: &value, RestartCount: &value}
+		case ToolErrorLogs:
+			namespace, container := incident.Namespace, incident.Service
+			if step.Target == TargetRelatedOperator {
+				namespace, container = "external-secrets", "external-secrets"
+			}
+			if !hasLogScope(evidence.Logs, namespace, container) {
+				evidence.Logs = append(evidence.Logs, LogSample{Namespace: namespace, Container: container, Message: "test evidence dependency unavailable"})
+			}
+		case ToolWorkloadStatus:
+			evidence.Workload = &WorkloadStatus{DesiredReplicas: 1, AvailableReplicas: 1, ReadyPods: 1, TotalPods: 1}
+		case ToolKubernetesEvents:
+			evidence.Events = []KubernetesEvent{{Reason: "Test", Message: "test evidence"}}
+		case ToolNetworkPolicies:
+			evidence.NetworkPolicies = []NetworkPolicyEvidence{{Name: "test-policy"}}
+		case ToolTraceContext:
+			evidence.Traces = []TraceEvidence{{TraceID: "test"}}
+		case ToolRecentChanges:
+			evidence.RecentChanges = []DeploymentChange{{ReplicaSet: "test"}}
+		case ToolNodeStatus:
+			evidence.NodeStatus = &NodeStatusEvidence{Name: "test-node"}
+		}
+	}
+	return evidence
 }
 
 type fakeNotifier struct{}
@@ -81,6 +109,40 @@ func TestPolicyChangeAlwaysCollectsNetworkPolicies(t *testing.T) {
 	if !planHasTool(collector.plan, ToolNetworkPolicies) {
 		t.Fatalf("unexpected plan: %+v", collector.plan.Steps)
 	}
+}
+
+func TestEvidenceContractCannotBeOmittedByPlanner(t *testing.T) {
+	collector := &fakeCollector{}
+	processor := NewProcessor(Config{QueueSize: 1}, collector, &fakeLLM{}, fakeNotifier{})
+	outcome := processor.Process(context.Background(), Incident{Kind: "unknown_signal", Service: "auth-service", Description: "container restarted after rapid memory growth"})
+
+	if !planHasTarget(collector.plan, ToolWorkloadStatus, TargetIncidentPods) || !planHasTarget(collector.plan, ToolKubernetesEvents, TargetIncidentPods) {
+		t.Fatalf("mandatory pod evidence missing: %+v", collector.plan.Steps)
+	}
+	if !outcome.EvidenceComplete || !outcome.Grounded {
+		t.Fatalf("unexpected evidence result: %+v", outcome)
+	}
+}
+
+func TestUngroundedRCAIsNotCached(t *testing.T) {
+	llm := &fakeLLM{result: &RCAResult{RootCause: "no evidence available", Confidence: "high", Evidence: []string{"unrelated claim"}}}
+	processor := NewProcessor(Config{QueueSize: 1, RCACacheTTL: time.Hour}, &fakeCollector{}, llm, fakeNotifier{})
+	incident := Incident{Kind: "unknown_signal", Service: "auth-service", StartedAt: time.Now()}
+
+	first := processor.Process(context.Background(), incident)
+	second := processor.Process(context.Background(), incident)
+	if first.Grounded || first.RCA.Confidence != "low" || second.Grounded || llm.analyses != 2 {
+		t.Fatalf("first=%+v second=%+v analyses=%d", first, second, llm.analyses)
+	}
+}
+
+func planHasTarget(plan CollectionPlan, tool, target string) bool {
+	for _, step := range plan.Steps {
+		if step.Tool == tool && step.Target == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAdaptivePlanPromotesAfterCrossServiceShadowValidation(t *testing.T) {
@@ -149,7 +211,7 @@ func TestAdaptivePlanIgnoresInconclusiveFailures(t *testing.T) {
 
 func TestAdaptivePlanDemotesOnlyAfterConsecutiveConclusiveFailures(t *testing.T) {
 	low := RCAResult{RootCause: "insufficient evidence", Confidence: "low"}
-	high := RCAResult{RootCause: "dependency unavailable", Confidence: "high"}
+	high := RCAResult{RootCause: "dependency unavailable", Confidence: "high", Evidence: []string{"dependency unavailable"}}
 	llm := &fakeLLM{result: &low}
 	processor := NewProcessor(Config{QueueSize: 1}, &fakeCollector{}, llm, fakeNotifier{})
 	incident := Incident{AlertName: "DependencyFailure", Kind: "dependency_failure", Service: "auth-service", Description: "dependency timed out"}

@@ -21,8 +21,7 @@ Unknown-signal plans become adaptive rules only after the same normalized strate
 
 | Mode | Behavior |
 | --- | --- |
-| `training` | Learns recurring log patterns; no LLM calls or Discord notifications |
-| `shadow` | Runs analysis within budget but suppresses Discord |
+| `shadow` | Learns recurring log patterns and adaptive plans while suppressing Discord |
 | `detect` | Runs analysis and sends outcomes to Discord |
 
 ## Run
@@ -50,7 +49,7 @@ The AWS SDK uses its default credential chain, including EKS IRSA.
 | `INCIDENT_COOLDOWN` | `10m` |
 | `MAX_BEDROCK_CALLS_PER_HOUR` | `20`; `0` means unlimited |
 | `RCA_CACHE_TTL` | `1h` |
-| `PATTERN_AUTO_PROMOTE_AFTER` | `3` training observations |
+| `PATTERN_AUTO_PROMOTE_AFTER` | `3` shadow observations |
 | `MAX_PATTERNS` | `1000` |
 | `ADAPTIVE_PLAN_MIN_OBSERVATIONS` | `5` matching planner results |
 | `ADAPTIVE_PLAN_MIN_SERVICES` | `2` services |

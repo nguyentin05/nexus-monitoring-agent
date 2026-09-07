@@ -59,7 +59,7 @@ func NewPatternCatalog(path string, autoPromote, maxPatterns int) (*PatternCatal
 // Observe updates the bounded catalog and returns patterns that are new in
 // shadow/detect mode. The per-service cursor prevents overlapping Loki windows
 // from relearning the same log records.
-func (c *PatternCatalog) Observe(service string, logs []LogSample, training bool) ([]LogPattern, error) {
+func (c *PatternCatalog) Observe(service string, logs []LogSample, learn bool) ([]LogPattern, error) {
 	ordered := append([]LogSample(nil), logs...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Timestamp.Before(ordered[j].Timestamp) })
 
@@ -87,10 +87,10 @@ func (c *PatternCatalog) Observe(service string, logs []LogSample, training bool
 		}
 		pattern.Count++
 		pattern.LastSeen = sample.Timestamp
-		if training && pattern.Count >= c.autoPromote {
+		if learn && pattern.Count >= c.autoPromote {
 			pattern.Known = true
 		}
-		if !training && !pattern.Known && !pattern.Alerted {
+		if !pattern.Known && !pattern.Alerted {
 			pattern.Alerted = true
 			novel = append(novel, *pattern)
 		}

@@ -43,13 +43,19 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 				}
 			}
 		case ToolErrorLogs:
-			if len(evidence.Logs) == 0 {
-				logs, err := t.filteredErrorLogs(ctx, incident.Service, time.Duration(step.LookbackMinutes)*time.Minute, step.LogTerms, step.Limit)
-				if err != nil {
-					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
-				} else {
-					evidence.Logs = logs
-				}
+			namespace, container, err := logTarget(incident, step.Target)
+			if err != nil {
+				evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
+				continue
+			}
+			if hasLogScope(evidence.Logs, namespace, container) {
+				continue
+			}
+			logs, err := t.filteredErrorLogs(ctx, namespace, container, time.Duration(step.LookbackMinutes)*time.Minute, step.LogTerms, step.Limit)
+			if err != nil {
+				evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
+			} else {
+				evidence.Logs = append(evidence.Logs, logs...)
 			}
 		case ToolWorkloadStatus:
 			if evidence.Workload == nil {
@@ -103,7 +109,18 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 			if evidence.NodeStatus == nil {
 				if t.kube == nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, "Kubernetes service account is unavailable")
-				} else if status, err := t.kube.NodeStatus(ctx, incident.Service); err != nil {
+					continue
+				}
+				name := incident.Service
+				if step.Target == TargetRelatedNode {
+					var err error
+					name, err = t.kube.RelatedNode(ctx, incident.Namespace, incident.Service)
+					if err != nil {
+						evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
+						continue
+					}
+				}
+				if status, err := t.kube.NodeStatus(ctx, name); err != nil {
 					evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
 				} else {
 					evidence.NodeStatus = &status
@@ -203,10 +220,10 @@ func (t *Telemetry) prometheusQuery(ctx context.Context, query string) (*float64
 }
 
 func (t *Telemetry) ErrorLogs(ctx context.Context, service string, lookback time.Duration) ([]LogSample, error) {
-	return t.filteredErrorLogs(ctx, service, lookback, nil, t.cfg.MaxLogSamples)
+	return t.filteredErrorLogs(ctx, t.cfg.Namespace, service, lookback, nil, t.cfg.MaxLogSamples)
 }
 
-func (t *Telemetry) filteredErrorLogs(ctx context.Context, service string, lookback time.Duration, terms []string, limit int) ([]LogSample, error) {
+func (t *Telemetry) filteredErrorLogs(ctx context.Context, namespace, container string, lookback time.Duration, terms []string, limit int) ([]LogSample, error) {
 	if len(terms) == 0 {
 		terms = []string{"error", "exception", "traceback", "panic", "fatal", "timeout"}
 	}
@@ -214,7 +231,7 @@ func (t *Telemetry) filteredErrorLogs(ctx context.Context, service string, lookb
 	for i, term := range terms {
 		escaped[i] = regexp.QuoteMeta(term)
 	}
-	query := fmt.Sprintf(`{namespace=%q,container=%q} |~ "(?i)(%s)"`, t.cfg.Namespace, service, strings.Join(escaped, "|"))
+	query := fmt.Sprintf(`{namespace=%q,container=%q} |~ "(?i)(%s)"`, namespace, container, strings.Join(escaped, "|"))
 	params := url.Values{
 		"query":     []string{query},
 		"start":     []string{strconv.FormatInt(time.Now().Add(-lookback).UnixNano(), 10)},
@@ -241,10 +258,32 @@ func (t *Telemetry) filteredErrorLogs(ctx context.Context, service string, lookb
 				continue
 			}
 			ns, _ := strconv.ParseInt(value[0], 10, 64)
-			logs = append(logs, LogSample{Timestamp: time.Unix(0, ns).UTC(), Pod: stream.Stream["pod"], Message: redact(value[1], 500)})
+			logs = append(logs, LogSample{Timestamp: time.Unix(0, ns).UTC(), Namespace: stream.Stream["namespace"], Pod: stream.Stream["pod"], Container: stream.Stream["container"], Message: redact(value[1], 500)})
 		}
 	}
 	return logs, nil
+}
+
+func hasLogScope(samples []LogSample, namespace, container string) bool {
+	for _, sample := range samples {
+		if sample.Namespace == namespace && sample.Container == container {
+			return true
+		}
+		if namespace != "external-secrets" && sample.Namespace == "" && sample.Container == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func logTarget(incident Incident, target string) (string, string, error) {
+	if target == TargetRelatedOperator {
+		if incidentFamily(incident) == familySecrets {
+			return "external-secrets", "external-secrets", nil
+		}
+		return "", "", fmt.Errorf("no related operator is allowlisted for incident family %s", incidentFamily(incident))
+	}
+	return incident.Namespace, incident.Service, nil
 }
 
 func (t *Telemetry) getJSON(ctx context.Context, endpoint string, target any) error {
@@ -393,6 +432,52 @@ func (k *KubeClient) WorkloadStatus(ctx context.Context, namespace, service stri
 		}
 	}
 	return status, nil
+}
+
+func (k *KubeClient) RelatedNode(ctx context.Context, namespace, service string) (string, error) {
+	var pods struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				NodeName string `json:"nodeName"`
+			} `json:"spec"`
+			Status struct {
+				Phase      string `json:"phase"`
+				Conditions []struct {
+					Type   string `json:"type"`
+					Status string `json:"status"`
+				} `json:"conditions"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	path := "/api/v1/namespaces/" + url.PathEscape(namespace) + "/pods?labelSelector=" + url.QueryEscape("app.kubernetes.io/name="+service)
+	if err := k.get(ctx, path, &pods); err != nil {
+		return "", err
+	}
+	bestNode, bestScore := "", -1
+	for _, pod := range pods.Items {
+		if pod.Spec.NodeName == "" {
+			continue
+		}
+		score := 0
+		if pod.Status.Phase != "Running" {
+			score += 2
+		}
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == "Ready" && condition.Status != "True" {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestNode, bestScore = pod.Spec.NodeName, score
+		}
+	}
+	if bestNode == "" {
+		return "", fmt.Errorf("no scheduled Pod found for service %s", service)
+	}
+	return bestNode, nil
 }
 
 func (k *KubeClient) NetworkPolicies(ctx context.Context, namespace, service string) ([]NetworkPolicyEvidence, error) {

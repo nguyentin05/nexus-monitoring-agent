@@ -122,3 +122,27 @@ func TestTraceAndDeploymentContextAreBounded(t *testing.T) {
 		t.Fatalf("changes=%+v err=%v", changes, err)
 	}
 }
+
+func TestLogTargetOnlyAllowsKnownRelatedOperator(t *testing.T) {
+	incident := Incident{Kind: "unknown_signal", Namespace: "apps", Service: "auth-service", Description: "Vault secret reconciliation failed"}
+	namespace, container, err := logTarget(incident, TargetRelatedOperator)
+	if err != nil || namespace != "external-secrets" || container != "external-secrets" {
+		t.Fatalf("namespace=%q container=%q err=%v", namespace, container, err)
+	}
+	if _, _, err := logTarget(Incident{Description: "network timeout"}, TargetRelatedOperator); err == nil {
+		t.Fatal("unexpected related operator mapping")
+	}
+}
+
+func TestRelatedNodePrefersUnhealthyPod(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[{"metadata":{"name":"service-ready"},"spec":{"nodeName":"node-a"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"service-failed"},"spec":{"nodeName":"node-b"},"status":{"phase":"Failed","conditions":[{"type":"Ready","status":"False"}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := &KubeClient{baseURL: server.URL, httpClient: server.Client()}
+	node, err := client.RelatedNode(context.Background(), "apps", "service")
+	if err != nil || node != "node-b" {
+		t.Fatalf("node=%q err=%v", node, err)
+	}
+}

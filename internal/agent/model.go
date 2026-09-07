@@ -13,7 +13,10 @@ const (
 	ToolNodeStatus       = "node_status"
 
 	TargetIncidentService = "incident.service"
+	TargetIncidentPods    = "incident.pods"
 	TargetIncidentNode    = "incident.node"
+	TargetRelatedNode     = "related.node"
+	TargetRelatedOperator = "related.operator"
 )
 
 var allowedTools = map[string]struct{}{
@@ -62,7 +65,9 @@ type MetricSnapshot struct {
 
 type LogSample struct {
 	Timestamp time.Time `json:"timestamp"`
+	Namespace string    `json:"namespace,omitempty"`
 	Pod       string    `json:"pod"`
+	Container string    `json:"container,omitempty"`
 	Message   string    `json:"message"`
 }
 
@@ -126,6 +131,7 @@ type Evidence struct {
 	RecentChanges   []DeploymentChange      `json:"recent_changes,omitempty"`
 	NodeStatus      *NodeStatusEvidence     `json:"node_status,omitempty"`
 	CollectionErrs  []string                `json:"collection_errors,omitempty"`
+	EvidenceGaps    []string                `json:"evidence_gaps,omitempty"`
 }
 
 type CollectionStep struct {
@@ -152,11 +158,13 @@ type RCAResult struct {
 }
 
 type Outcome struct {
-	Incident Incident   `json:"incident"`
-	Path     string     `json:"path"`
-	RCA      *RCAResult `json:"rca,omitempty"`
-	Fallback bool       `json:"fallback"`
-	Error    string     `json:"error,omitempty"`
+	Incident         Incident   `json:"incident"`
+	Path             string     `json:"path"`
+	RCA              *RCAResult `json:"rca,omitempty"`
+	Fallback         bool       `json:"fallback"`
+	Grounded         bool       `json:"grounded"`
+	EvidenceComplete bool       `json:"evidence_complete"`
+	Error            string     `json:"error,omitempty"`
 }
 
 type TokenUsage struct {
