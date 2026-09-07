@@ -294,3 +294,12 @@ func TestComputeRCARejectsUnrelatedPodEvent(t *testing.T) {
 		t.Fatal("unrelated pod event accepted as compute root cause")
 	}
 }
+
+func TestCorrelatedIncidentDropsUnscopedTraceSearch(t *testing.T) {
+	collector := &fakeCollector{}
+	processor := NewProcessor(Config{QueueSize: 1}, collector, &fakeLLM{}, fakeNotifier{})
+	processor.Process(context.Background(), Incident{Kind: "error_rate_high", CorrelationID: "run-123"})
+	if planHasTool(collector.plan, ToolTraceContext) {
+		t.Fatalf("uncorrelated trace search retained: %+v", collector.plan.Steps)
+	}
+}

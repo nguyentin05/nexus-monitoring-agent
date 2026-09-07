@@ -194,6 +194,15 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 
 	contract := contractForIncident(incident)
 	plan = mergeContract(plan, contract)
+	if incident.CorrelationID != "" {
+		filtered := plan.Steps[:0]
+		for _, step := range plan.Steps {
+			if step.Tool != ToolTraceContext {
+				filtered = append(filtered, step)
+			}
+		}
+		plan.Steps = filtered
+	}
 	incident.Evidence = p.collector.Collect(ctx, incident, plan)
 	incident.Evidence.EvidenceGaps = contract.gaps(incident.Evidence)
 	complete := len(incident.Evidence.CollectionErrs) == 0 && len(incident.Evidence.EvidenceGaps) == 0
