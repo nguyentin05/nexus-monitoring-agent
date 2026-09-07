@@ -17,4 +17,4 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Rhysd actionlint
-        uses: devops-actions/actionlint@v0.1.12
+        uses: devops-actions/actionlint@v0.1.13
