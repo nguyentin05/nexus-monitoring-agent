@@ -40,3 +40,10 @@ func TestMergeContractRejectsEvidenceUnrelatedToSignalFamily(t *testing.T) {
 		t.Fatalf("compute plan accepted unrelated events: %+v", merged.Steps)
 	}
 }
+
+func TestIncidentFamilyIgnoresNegatedCPUSaturation(t *testing.T) {
+	incident := Incident{Description: "The service p99 response time exceeded 1.5 seconds without CPU saturation"}
+	if family := incidentFamily(incident); family != familyLatency {
+		t.Fatalf("family=%s", family)
+	}
+}

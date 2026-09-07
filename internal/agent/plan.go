@@ -246,6 +246,7 @@ func cloneCollectionPlan(plan CollectionPlan) CollectionPlan {
 
 func incidentFamily(incident Incident) string {
 	text := strings.ToLower(strings.Join([]string{incident.Kind, incident.AlertName, incident.Description}, " "))
+	text = strings.ReplaceAll(text, "without cpu saturation", "")
 	switch {
 	case containsAny(text, "vault", "external secret", "secret reconciliation", "required credentials"):
 		return familySecrets
