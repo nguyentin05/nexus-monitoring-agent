@@ -51,7 +51,7 @@ func (t *Telemetry) Collect(ctx context.Context, incident Incident, plan Collect
 			if hasLogScope(evidence.Logs, namespace, container) {
 				continue
 			}
-			logs, err := t.filteredErrorLogs(ctx, namespace, container, incident.StartedAt, incident.CorrelationKey, time.Duration(step.LookbackMinutes)*time.Minute, step.LogTerms, step.Limit)
+			logs, err := t.filteredErrorLogs(ctx, namespace, container, incident.StartedAt, incident.CorrelationID, time.Duration(step.LookbackMinutes)*time.Minute, step.LogTerms, step.Limit)
 			if err != nil {
 				evidence.CollectionErrs = append(evidence.CollectionErrs, err.Error())
 			} else {

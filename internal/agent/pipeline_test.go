@@ -27,7 +27,7 @@ func (f *fakeLLM) Analyze(context.Context, Incident) (RCAResult, TokenUsage, err
 	if f.result != nil {
 		return *f.result, TokenUsage{Input: 20, Output: 5}, nil
 	}
-	return RCAResult{RootCause: "test evidence", Confidence: "high", Evidence: []string{"test evidence"}, SuggestedActions: []string{"inspect"}}, TokenUsage{Input: 20, Output: 5}, nil
+	return RCAResult{RootCause: "CPU test evidence", Confidence: "high", Evidence: []string{"test evidence"}, SuggestedActions: []string{"inspect"}}, TokenUsage{Input: 20, Output: 5}, nil
 }
 
 type fakeCollector struct {
@@ -286,5 +286,11 @@ func TestBedrockBudgetFallsBackDeterministically(t *testing.T) {
 	}
 	if llm.plans != 1 || llm.analyses != 0 {
 		t.Fatalf("plans=%d analyses=%d", llm.plans, llm.analyses)
+	}
+}
+
+func TestComputeRCARejectsUnrelatedPodEvent(t *testing.T) {
+	if rootCauseMatchesSignal(familyCompute, "readiness probe failed on port 8000") {
+		t.Fatal("unrelated pod event accepted as compute root cause")
 	}
 }

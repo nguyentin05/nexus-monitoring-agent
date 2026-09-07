@@ -340,6 +340,9 @@ func mergeContract(plan CollectionPlan, contract evidenceContract) CollectionPla
 		if err != nil {
 			continue
 		}
+		if !contract.allows(normalized.Tool) {
+			continue
+		}
 		key := normalized.Tool + "\x00" + normalized.Target
 		if _, duplicate := seen[key]; duplicate {
 			continue
@@ -354,6 +357,19 @@ func mergeContract(plan CollectionPlan, contract evidenceContract) CollectionPla
 		return collectionStepKey(merged.Steps[i]) < collectionStepKey(merged.Steps[j])
 	})
 	return merged
+}
+
+func (contract evidenceContract) allows(tool string) bool {
+	switch tool {
+	case ToolNodeStatus:
+		return contract.Family == familyNode || contract.Family == familyStorage
+	case ToolNetworkPolicies:
+		return contract.Family == familyNetwork || contract.Family == familyDependency
+	case ToolKubernetesEvents:
+		return contract.Family == familyPodLifecycle || contract.Family == familyDeployment || contract.Family == familyStorage || contract.Family == familySecrets || contract.Family == familyNetwork
+	default:
+		return true
+	}
 }
 
 func (contract evidenceContract) gaps(evidence Evidence) []string {

@@ -34,8 +34,8 @@ func TestAlertsRequireAuthenticatedAlertmanager(t *testing.T) {
 	}
 	select {
 	case incident := <-processor.queue:
-		if incident.CorrelationKey != "run-123" {
-			t.Fatalf("correlation key=%q", incident.CorrelationKey)
+		if incident.CorrelationID != "run-123" {
+			t.Fatalf("correlation id=%q", incident.CorrelationID)
 		}
 	default:
 		t.Fatal("alert was not submitted")

@@ -210,7 +210,7 @@ func (p *Processor) Process(ctx context.Context, incident Incident) Outcome {
 	if err != nil {
 		return p.fallback(incident, path, plannerErr, err)
 	}
-	grounded := groundedRCA(result, incident.Evidence)
+	grounded := groundedRCA(result, incident.Evidence) && rootCauseMatchesSignal(contract.Family, result.RootCause)
 	if !grounded && result.Confidence != "low" {
 		slog.Warn("RCA confidence downgraded", "incident", incident.Key(), "root_cause", result.RootCause)
 		result.Confidence = "low"
@@ -277,6 +277,13 @@ func groundedRCA(result RCAResult, evidence Evidence) bool {
 		}
 	}
 	return false
+}
+
+func rootCauseMatchesSignal(family, rootCause string) bool {
+	if family != familyCompute {
+		return true
+	}
+	return containsAny(strings.ToLower(rootCause), "cpu", "memory", "oom", "resource", "saturat", "intensive", "load")
 }
 
 func (p *Processor) fallback(incident Incident, path string, plannerErr, rcaErr error) Outcome {

@@ -40,6 +40,7 @@ type Incident struct {
 	Description    string    `json:"description"`
 	Fingerprint    string    `json:"fingerprint,omitempty"`
 	CorrelationKey string    `json:"correlation_key,omitempty"`
+	CorrelationID  string    `json:"correlation_id,omitempty"`
 	StartedAt      time.Time `json:"started_at"`
 	Evidence       Evidence  `json:"evidence,omitempty"`
 }

@@ -112,16 +112,16 @@ func (s *HTTPServer) alerts(w http.ResponseWriter, r *http.Request) {
 			startedAt = time.Now().UTC()
 		}
 		incident := Incident{
-			Source:         "alertmanager",
-			AlertName:      alertName,
-			Kind:           alertKind(alertName),
-			Service:        service,
-			Namespace:      namespace,
-			Severity:       first(alert.Labels, "severity", "priority"),
-			Description:    redact(strings.TrimSpace(alert.Annotations["summary"]+". "+alert.Annotations["description"]), 2000),
-			Fingerprint:    alert.Fingerprint,
-			CorrelationKey: first(alert.Labels, "correlation_id", "run_id", "trace_id"),
-			StartedAt:      startedAt,
+			Source:        "alertmanager",
+			AlertName:     alertName,
+			Kind:          alertKind(alertName),
+			Service:       service,
+			Namespace:     namespace,
+			Severity:      first(alert.Labels, "severity", "priority"),
+			Description:   redact(strings.TrimSpace(alert.Annotations["summary"]+". "+alert.Annotations["description"]), 2000),
+			Fingerprint:   alert.Fingerprint,
+			CorrelationID: first(alert.Labels, "correlation_id", "run_id", "trace_id"),
+			StartedAt:     startedAt,
 		}
 		if incident.Severity == "" {
 			incident.Severity = "warning"

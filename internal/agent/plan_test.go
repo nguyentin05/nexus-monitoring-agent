@@ -32,3 +32,11 @@ func TestMergeContractKeepsRequiredQueryForSameScope(t *testing.T) {
 		t.Fatalf("required query was replaced: %+v", merged.Steps)
 	}
 }
+
+func TestMergeContractRejectsEvidenceUnrelatedToSignalFamily(t *testing.T) {
+	contract := contractForIncident(Incident{Description: "CPU usage exceeded threshold"})
+	merged := mergeContract(CollectionPlan{Steps: []CollectionStep{{Tool: ToolKubernetesEvents}}}, contract)
+	if planHasTool(merged, ToolKubernetesEvents) {
+		t.Fatalf("compute plan accepted unrelated events: %+v", merged.Steps)
+	}
+}
