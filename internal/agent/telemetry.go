@@ -315,11 +315,13 @@ func (t *Telemetry) getJSON(ctx context.Context, endpoint string, target any) er
 type KubeClient struct {
 	baseURL    string
 	token      string
+	tokenPath  string
 	httpClient *http.Client
 }
 
 func newKubeClient(timeout time.Duration) *KubeClient {
-	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	const tokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	_, err := os.ReadFile(tokenPath)
 	if err != nil {
 		return nil
 	}
@@ -333,9 +335,20 @@ func newKubeClient(timeout time.Duration) *KubeClient {
 	}
 	return &KubeClient{
 		baseURL:    "https://kubernetes.default.svc",
-		token:      strings.TrimSpace(string(token)),
+		tokenPath:  tokenPath,
 		httpClient: &http.Client{Timeout: timeout, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}},
 	}
+}
+
+func (k *KubeClient) currentToken() (string, error) {
+	if k.tokenPath == "" {
+		return k.token, nil
+	}
+	token, err := os.ReadFile(k.tokenPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(token)), nil
 }
 
 func (k *KubeClient) get(ctx context.Context, path string, target any) error {
@@ -343,7 +356,11 @@ func (k *KubeClient) get(ctx context.Context, path string, target any) error {
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+k.token)
+	token, err := k.currentToken()
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
 	response, err := k.httpClient.Do(request)
 	if err != nil {
 		return err
@@ -368,7 +385,11 @@ func (k *KubeClient) AuthenticateServiceAccount(ctx context.Context, token, expe
 	if err != nil {
 		return false, err
 	}
-	request.Header.Set("Authorization", "Bearer "+k.token)
+	clientToken, err := k.currentToken()
+	if err != nil {
+		return false, err
+	}
+	request.Header.Set("Authorization", "Bearer "+clientToken)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := k.httpClient.Do(request)
 	if err != nil {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +13,28 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
+
+func TestKubeClientReloadsRotatedToken(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	var tokens []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokens = append(tokens, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	client := &KubeClient{baseURL: server.URL, tokenPath: tokenPath, httpClient: server.Client()}
+	for _, token := range []string{"first", "second"} {
+		if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.get(context.Background(), "/test", &struct{}{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(tokens) != 2 || tokens[0] != "Bearer first" || tokens[1] != "Bearer second" {
+		t.Fatalf("authorization headers = %v", tokens)
+	}
+}
 
 func TestWorkloadStatusIncludesLastTerminationReason(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
