@@ -45,7 +45,7 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6.2.3
+        uses: aws-actions/configure-aws-credentials@v6.2.4
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_ECR_ROLE_ARN }}
@@ -59,7 +59,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Docker Setup Buildx
-        uses: docker/setup-buildx-action@v4.2.0
+        uses: docker/setup-buildx-action@v4.3.0
 
       - name: Build and push image
         uses: docker/build-push-action@v7.3.0
@@ -83,7 +83,7 @@ jobs:
       REPOSITORY: nexus-monitoring-agent
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6.2.3
+        uses: aws-actions/configure-aws-credentials@v6.2.4
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_ECR_ROLE_ARN }}
@@ -102,7 +102,7 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@v0.24.0
+        uses: anchore/sbom-action@v0.24.2
         with:
           image: ${{ steps.login-ecr.outputs.registry }}/${{ env.REPOSITORY }}@${{ steps.image.outputs.digest }}
           format: spdx-json
@@ -138,7 +138,7 @@ jobs:
           path: gitops
 
       - name: Update GitOps image tag
-        uses: mikefarah/yq@v4.53.3
+        uses: mikefarah/yq@v4.53.6
         with:
           cmd: yq -i '.image.tag = "${{ env.IMAGE_TAG }}"' gitops/charts/monitoring-agent/values-dev.yaml
 
