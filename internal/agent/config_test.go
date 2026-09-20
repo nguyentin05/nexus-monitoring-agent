@@ -25,7 +25,7 @@ func TestConfigDefaultsOnlyWhenEnvironmentVariableIsUnset(t *testing.T) {
 	if _, err := durationEnv(name, time.Minute); err == nil {
 		t.Fatal("empty duration variable should fail validation")
 	}
-	t.Setenv("WATCHED_SERVICES", "auth-service,aiops-benchmark-service")
+	t.Setenv("WATCHED_SERVICES", "auth-service,profile-service")
 	t.Setenv("DISCOVERY_SERVICES", "auth-service")
 	cfg, err := LoadConfig()
 	if err != nil {

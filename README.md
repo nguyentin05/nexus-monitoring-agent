@@ -1,66 +1,59 @@
 # Nexus Monitoring Agent
 
-Read-only AIOps service that receives metric incidents from Alertmanager, discovers novel error-log patterns in Loki, collects targeted evidence, and produces RCA through Amazon Bedrock.
+Nexus Monitoring Agent is a AIOps Agent that detect incidents, analyzes root causes and sends action suggestions to notification.
+
+## Core Capabilities
+
+- **Incident intake**: Triggered by Alertmanager and also detects anomalies application error patterns internally.
+- **Context-aware RCA**: Collects relevant telemetry and Kubernetes context before analyzing an incident.
+- **Alert to notifications**: Sends an incident summary, confidence level and investigation steps to notification like Discord.
+- **Saving cost**: Reuses validated approaches for recurring or obvious incidents to avoid unnecessary LLM requests.
+- **Safety**: allow read-only queries and keeps credentials outside source code.
 
 ## Architecture
 
-    Prometheus rules -> Alertmanager webhook --+
-                                                +-> dedup/cooldown -> exact rule -> result
-    Loki error-log discovery ------------------+          |
-                                                           +-> known/adaptive collection plan -> collectors -> LLM RCA
-                                                           |
-                                                           +-> unknown signal -> LLM planner -> collectors -> LLM RCA
+<img src="./docs/architecture/architecture.png" alt="High-level Architecture">
+<i>High-level architecture</i>
+<br>
+<br>
 
-`Discovery` only detects novel log patterns. Metric threshold detection belongs to Prometheus rules, avoiding duplicate incidents and duplicate LLM calls.
+The agent receives signals from the monitoring stack, collects context needed to understand the affected service, produces an RCA through an LLM provider when needed and delivers the outcome to the notification.
 
-Collection plans are normalized read-only steps over Prometheus, Loki, Tempo, and the Kubernetes API. Supported tools are `service_metrics`, `error_logs`, `workload_status`, `kubernetes_events`, `network_policies`, `trace_context`, `recent_changes`, and `node_status`. The planner can select bounded filters and time windows, but cannot choose URLs, commands, or mutations.
+## Tech Stack
 
-Unknown-signal plans become adaptive rules only after the same normalized strategy succeeds repeatedly across services and then passes shadow validation. Active rules skip the planner call but still collect fresh evidence and run RCA. Two consecutive conclusive low-confidence results demote a rule; LLM, budget, and collector failures do not.
-
-## Modes
-
-| Mode | Behavior |
+| Area | Technology |
 | --- | --- |
-| `shadow` | Learns recurring log patterns and adaptive plans while suppressing Discord |
-| `detect` | Runs analysis and sends outcomes to Discord |
+| Language | Go |
+| AI inference | Amazon Bedrock |
+| Monitoring | Prometheus, Alertmanager, Loki, Tempo and OpenTelemetry |
+| Runtime | Docker, Kubernetes and Amazon EKS |
+| Delivery | GitHub Actions and Argo CD |
+| Notifications | Discord |
 
-## Run
+## Demo
 
-```bash
-go test ./...
-go run ./cmd/agent
+<img src="./docs/demo.png" alt="Example AIOps incident notification">
+<i>Example incident notification delivered to Discord</i>
+<br>
+
+## Deployment
+
+The agent runs as a container in Amazon EKS. Its Kubernetes configuration,
+runtime identity, secrets and deployment lifecycle are managed by the
+[`nexus-gitops`](https://github.com/nguyentin05/nexus-gitops) repository.
+
+Required runtime integrations are supplied by the platform:
+
+- Monitoring and telemetry services
+- An LLM inference provider
+- Discord webhook delivery
+- Kubernetes identity and access controls
+
+## Repository Structure
+
+```text
+cmd/agent/          Application entry point
+internal/agent/     Agent implementation
+docs/               Architecture and demo images
+.github/workflows/  CI/CD workflows
 ```
-
-The AWS SDK uses its default credential chain, including EKS IRSA.
-
-## Configuration
-
-| Variable | Default |
-| --- | --- |
-| `AGENT_MODE` | `shadow` |
-| `AWS_REGION` | `ap-southeast-1` |
-| `BEDROCK_MODEL_ID` | `global.amazon.nova-2-lite-v1:0` |
-| `PROMETHEUS_URL` | in-cluster Prometheus service |
-| `LOKI_URL` | in-cluster Loki gateway |
-| `TEMPO_URL` | in-cluster Tempo service |
-| `WATCHED_SERVICES` | `auth-service,profile-service` |
-| `DISCOVERY_SERVICES` | `WATCHED_SERVICES` |
-| `POLL_INTERVAL` | `1m` |
-| `INCIDENT_COOLDOWN` | `10m` |
-| `MAX_BEDROCK_CALLS_PER_HOUR` | `20`; `0` means unlimited |
-| `RCA_CACHE_TTL` | `1h` |
-| `PATTERN_AUTO_PROMOTE_AFTER` | `3` shadow observations |
-| `MAX_PATTERNS` | `1000` |
-| `ADAPTIVE_PLAN_MIN_OBSERVATIONS` | `5` matching planner results |
-| `ADAPTIVE_PLAN_MIN_SERVICES` | `2` services |
-| `ADAPTIVE_PLAN_SHADOW_MATCHES` | `3` additional successful validations |
-| `STATE_DIR` | empty; state remains in memory |
-| `DISCORD_WEBHOOK_URL` | empty; outcomes are only logged |
-
-## HTTP API
-
-- `POST /alerts`
-- `GET /healthz`
-- `GET /readyz`
-- `GET /watched-services`
-- `GET /metrics`
